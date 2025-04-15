@@ -1,203 +1,681 @@
 import sqlite3
 import bcrypt
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, filedialog
+import os
+import fitz  # PyMuPDF
+from PIL import Image, ImageTk
+import warnings
 
-#configuração do banco de dados
-def criar_banco_dados():
-    conn = sqlite3.connect('usuarios.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS usuarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        senha_hash TEXT NOT NULL
-    )
-    ''')
-    
-    conn.commit()
-    conn.close()
+# Suppress warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="fitz")
 
-#funções de segurança
-def cadastrar_usuario(email, senha):
-    try:
-        salt = bcrypt.gensalt()
-        senha_hash = bcrypt.hashpw(senha.encode('utf-8'), salt)
-        
-        conn = sqlite3.connect('usuarios.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('INSERT INTO usuarios (email, senha_hash) VALUES (?, ?)', 
-                      (email, senha_hash))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-    except Exception as e:
-        print(f"Erro ao cadastrar: {e}")
-        return False
+# Database Configuration
+class DatabaseManager:
+    @staticmethod
+    def initialize():
+        """Initialize the database with required tables"""
+        with sqlite3.connect('usuarios.db') as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS usuarios (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT UNIQUE NOT NULL,
+                    senha_hash TEXT NOT NULL
+                )
+            ''')
+            conn.commit()
 
-def verificar_login(email, senha):
-    try:
-        conn = sqlite3.connect('usuarios.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT senha_hash FROM usuarios WHERE email = ?', (email,))
-        resultado = cursor.fetchone()
-        
-        conn.close()
-        
-        if resultado:
-            return bcrypt.checkpw(senha.encode('utf-8'), resultado[0])
-        return False
-    except Exception as e:
-        print(f"Erro ao verificar login: {e}")
-        return False
+    @staticmethod
+    def register_user(email, password):
+        """Register a new user in the database"""
+        try:
+            salt = bcrypt.gensalt()
+            password_hash = bcrypt.hashpw(password.encode('utf-8'), salt)
+            
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'INSERT INTO usuarios (email, senha_hash) VALUES (?, ?)',
+                    (email, password_hash.decode('utf-8'))
+                )
+                conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            messagebox.showerror("Error", "Email already registered!")
+            return False
+        except Exception as e:
+            messagebox.showerror("Error", f"Registration failed: {str(e)}")
+            return False
 
-#interface gráfica responsiva
-class ResponsiveLoginApp:
-    def __init__(self, root):
+    @staticmethod
+    def verify_login(email, password):
+        """Verify user credentials"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT senha_hash FROM usuarios WHERE email = ?',
+                    (email,)
+                )
+                result = cursor.fetchone()
+                
+                if result:
+                    stored_hash = result[0].encode('utf-8')
+                    return bcrypt.checkpw(password.encode('utf-8'), stored_hash)
+                return False
+        except Exception as e:
+            messagebox.showerror("Error", f"Login verification failed: {str(e)}")
+            return False
+
+# Improved PDF Viewer Component
+class PDFViewer:
+    def __init__(self, parent):
+        self.parent = parent
+        self.current_page = 0
+        self.pdf_doc = None
+        self.zoom_level = 1.0
+        self.image_cache = []
+        
+        # Setup UI
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Initialize all UI components"""
+        # Main container
+        self.main_frame = ttk.Frame(self.parent)
+        self.main_frame.pack(expand=True, fill='both', padx=10, pady=10)
+        
+        # Control panel
+        control_frame = ttk.Frame(self.main_frame)
+        control_frame.pack(fill='x', pady=5)
+        
+        # Navigation buttons
+        btn_frame = ttk.Frame(control_frame)
+        btn_frame.pack(side='left')
+        
+        self.btn_open = ttk.Button(btn_frame, text="Open PDF", command=self.open_pdf)
+        self.btn_open.pack(side='left', padx=5)
+        
+        self.btn_prev = ttk.Button(
+            btn_frame, 
+            text="◄ Previous", 
+            command=self.prev_page,
+            state='disabled'
+        )
+        self.btn_prev.pack(side='left', padx=5)
+        
+        self.btn_next = ttk.Button(
+            btn_frame, 
+            text="Next ►", 
+            command=self.next_page,
+            state='disabled'
+        )
+        self.btn_next.pack(side='left', padx=5)
+        
+        # Page info
+        self.lbl_page = ttk.Label(control_frame, text="Page: 0/0")
+        self.lbl_page.pack(side='left', padx=20)
+        
+        # Zoom controls
+        zoom_frame = ttk.Frame(control_frame)
+        zoom_frame.pack(side='right')
+        
+        ttk.Label(zoom_frame, text="Zoom:").pack(side='left', padx=5)
+        
+        self.zoom_var = tk.StringVar(value="100%")
+        zoom_menu = ttk.OptionMenu(
+            zoom_frame,
+            self.zoom_var,
+            "100%",
+            "50%", "75%", "100%", "125%", "150%", "200%",
+            command=self.change_zoom
+        )
+        zoom_menu.pack(side='left')
+
+        # PDF display area
+        self.setup_pdf_display()
+
+    def setup_pdf_display(self):
+        """Setup the PDF display area with scrollbars"""
+        # Container for canvas and scrollbars
+        container = ttk.Frame(self.main_frame)
+        container.pack(expand=True, fill='both')
+        
+        # Canvas for PDF display
+        self.canvas = tk.Canvas(container, bg='white')
+        self.canvas.pack(side='left', expand=True, fill='both')
+        
+        # Vertical scrollbar
+        v_scroll = ttk.Scrollbar(
+            container, 
+            orient='vertical', 
+            command=self.canvas.yview
+        )
+        v_scroll.pack(side='right', fill='y')
+        
+        # Horizontal scrollbar
+        h_scroll = ttk.Scrollbar(
+            container, 
+            orient='horizontal', 
+            command=self.canvas.xview
+        )
+        h_scroll.pack(side='bottom', fill='x')
+        
+        # Configure canvas scrolling
+        self.canvas.configure(
+            yscrollcommand=v_scroll.set,
+            xscrollcommand=h_scroll.set
+        )
+        
+        # Frame to hold PDF image
+        self.pdf_frame = ttk.Frame(self.canvas)
+        self.canvas.create_window(
+            (0, 0), 
+            window=self.pdf_frame, 
+            anchor='nw',
+            tags="pdf_frame"
+        )
+        
+        # Bind canvas resize event
+        self.canvas.bind("<Configure>", self.center_content)
+
+    def open_pdf(self):
+        """Open a PDF file dialog and load the selected file"""
+        filepath = filedialog.askopenfilename(
+            title="Select PDF File",
+            filetypes=[("PDF Files", "*.pdf")]
+        )
+        
+        if filepath:
+            try:
+                # Close previous PDF if open
+                if self.pdf_doc:
+                    self.pdf_doc.close()
+                    self.image_cache.clear()
+                
+                # Open new PDF
+                self.pdf_doc = fitz.open(filepath)
+                self.current_page = 0
+                self.render_page()
+                self.update_controls()
+                
+            except Exception as e:
+                messagebox.showerror(
+                    "Error", 
+                    f"Failed to open PDF:\n{str(e)}"
+                )
+
+    def render_page(self):
+        """Render the current PDF page"""
+        # Clear previous page
+        for widget in self.pdf_frame.winfo_children():
+            widget.destroy()
+        
+        if not self.pdf_doc or not 0 <= self.current_page < len(self.pdf_doc):
+            return
+            
+        try:
+            # Get PDF page
+            page = self.pdf_doc.load_page(self.current_page)
+            
+            # Create image from PDF page
+            zoom_matrix = fitz.Matrix(self.zoom_level, self.zoom_level)
+            pix = page.get_pixmap(matrix=zoom_matrix)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # Convert to PhotoImage and cache it
+            photo = ImageTk.PhotoImage(image=img)
+            self.image_cache = [photo]  # Keep reference
+            
+            # Display image
+            label = ttk.Label(self.pdf_frame, image=photo)
+            label.image = photo  # Keep reference
+            label.pack()
+            
+            # Update canvas scroll region
+            self.update_scroll_region()
+            
+        except Exception as e:
+            messagebox.showerror(
+                "Error", 
+                f"Failed to render page:\n{str(e)}"
+            )
+
+    def update_scroll_region(self):
+        """Update the scrollable region of the canvas"""
+        self.pdf_frame.update_idletasks()
+        bbox = self.canvas.bbox("all")
+        self.canvas.configure(scrollregion=bbox)
+        self.center_content()
+
+    def center_content(self, event=None):
+        """Center the PDF content in the canvas"""
+        if not hasattr(self, 'pdf_frame') or not self.pdf_frame.winfo_children():
+            return
+            
+        # Get canvas and content dimensions
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        content_width = self.pdf_frame.winfo_reqwidth()
+        content_height = self.pdf_frame.winfo_reqheight()
+        
+        # Calculate new position
+        x = max((canvas_width - content_width) / 2, 0)
+        y = max((canvas_height - content_height) / 2, 0)
+        
+        # Update position
+        self.canvas.coords("pdf_frame", x, y)
+
+    def prev_page(self):
+        """Go to previous page"""
+        if self.pdf_doc and self.current_page > 0:
+            self.current_page -= 1
+            self.render_page()
+            self.update_controls()
+
+    def next_page(self):
+        """Go to next page"""
+        if self.pdf_doc and self.current_page < len(self.pdf_doc) - 1:
+            self.current_page += 1
+            self.render_page()
+            self.update_controls()
+
+    def change_zoom(self, value):
+        """Change the zoom level"""
+        self.zoom_level = float(value.replace("%", "")) / 100
+        if self.pdf_doc:
+            self.render_page()
+
+    def update_controls(self):
+        """Update the state of navigation controls"""
+        if self.pdf_doc:
+            total_pages = len(self.pdf_doc)
+            self.btn_prev.config(state='normal' if self.current_page > 0 else 'disabled')
+            self.btn_next.config(state='normal' if self.current_page < total_pages - 1 else 'disabled')
+            self.lbl_page.config(text=f"Page: {self.current_page + 1}/{total_pages}")
+        else:
+            self.btn_prev.config(state='disabled')
+            self.btn_next.config(state='disabled')
+            self.lbl_page.config(text="Page: 0/0")
+
+# Main Application Window
+class MainApplication:
+    def __init__(self, root, user_email):
         self.root = root
-        self.root.title("Sistema de Login Responsivo")
+        self.user_email = user_email
+        self.notebook = None
+        self.pdf_viewer = None
         
-        #obter dimensões da tela
+        self.configure_window()
+        self.create_menu()
+        self.setup_interface()
+
+    def configure_window(self):
+        """Configure main window settings"""
+        self.root.title("PDF Viewer Application")
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        
-        #definir tamanho da janela (80% da tela)
         window_width = int(screen_width * 0.8)
         window_height = int(screen_height * 0.8)
-        
-        #centralizar janela
         position_x = (screen_width - window_width) // 2
         position_y = (screen_height - window_height) // 2
-        
         self.root.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
-        self.root.minsize(int(screen_width * 0.5), int(screen_height * 0.5))
+
+    def create_menu(self):
+        """Create the main menu bar"""
+        menubar = tk.Menu(self.root)
         
-        #criar banco de dados
-        criar_banco_dados()
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Home", command=self.show_home)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
+        menubar.add_cascade(label="File", menu=file_menu)
         
-        #estilo
-        self.style = ttk.Style()
-        self.style.configure('TFrame', background='#f0f0f0')
-        self.style.configure('TLabel', background='#f0f0f0', font=('Arial', 12))
-        self.style.configure('TButton', font=('Arial', 12), padding=10)
-        self.style.configure('TEntry', font=('Arial', 12), padding=8)
+        # User menu
+        user_menu = tk.Menu(menubar, tearoff=0)
+        user_menu.add_command(label="Profile", command=self.show_profile)
+        user_menu.add_command(label="Settings", command=self.show_settings)
+        menubar.add_cascade(label="User", menu=user_menu)
         
-        #frame principal
-        self.main_frame = ttk.Frame(root)
-        self.main_frame.pack(expand=True, fill='both', padx=20, pady=20)
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="About", command=self.show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
         
-        #frame do formulário (centralizado)
-        self.form_frame = ttk.Frame(self.main_frame)
-        self.form_frame.place(relx=0.5, rely=0.5, anchor='center')
+        self.root.config(menu=menubar)
+
+    def setup_interface(self):
+        """Set up the main interface"""
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(expand=True, fill='both', padx=10, pady=10)
         
-        #widgets
-        self.label_email = ttk.Label(self.form_frame, text="Email:")
-        self.label_senha = ttk.Label(self.form_frame, text="Senha:")
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(expand=True, fill='both')
         
-        self.entry_email = ttk.Entry(self.form_frame, width=30)
-        self.entry_senha = ttk.Entry(self.form_frame, width=30, show="*")
+        # Home tab
+        home_tab = ttk.Frame(self.notebook)
+        self.notebook.add(home_tab, text="Home")
         
-        self.btn_frame = ttk.Frame(self.form_frame)
-        self.btn_login = ttk.Button(self.btn_frame, text="Login", command=self.fazer_login)
-        self.btn_cadastrar = ttk.Button(self.btn_frame, text="Cadastrar", command=self.abrir_tela_cadastro)
+        # PDF Viewer tab
+        pdf_tab = ttk.Frame(self.notebook)
+        self.notebook.add(pdf_tab, text="PDF Viewer")
         
-        #layout responsivo
-        self.label_email.grid(row=0, column=0, sticky="e", pady=10, padx=5)
-        self.label_senha.grid(row=1, column=0, sticky="e", pady=10, padx=5)
+        self.pdf_viewer = PDFViewer(pdf_tab)
+        self.show_home()
+
+    def show_home(self):
+        """Show the home screen"""
+        if self.notebook:
+            self.notebook.select(0)
+            
+            # Clear existing widgets
+            for child in self.notebook.winfo_children()[0].winfo_children():
+                child.destroy()
+            
+            # Create home screen content
+            label = ttk.Label(
+                self.notebook.winfo_children()[0],
+                text=f"Welcome, {self.user_email}!\nThis is the home screen.", 
+                font=('Arial', 16),
+                justify='center'
+            )
+            label.pack(expand=True)
+            
+            button_frame = ttk.Frame(self.notebook.winfo_children()[0])
+            button_frame.pack(pady=20)
+            
+            ttk.Button(
+                button_frame,
+                text="Open Profile",
+                command=self.show_profile
+            ).pack(side='left', padx=10)
+            
+            ttk.Button(
+                button_frame,
+                text="Open Settings",
+                command=self.show_settings
+            ).pack(side='left', padx=10)
+            
+            ttk.Button(
+                button_frame,
+                text="Open PDF Viewer",
+                command=lambda: self.notebook.select(1)
+            ).pack(side='left', padx=10)
+
+    def show_profile(self):
+        """Show user profile"""
+        if self.notebook:
+            self.notebook.select(0)
+            home_tab = self.notebook.winfo_children()[0]
+            
+            # Clear existing widgets
+            for child in home_tab.winfo_children():
+                child.destroy()
+            
+            label = ttk.Label(
+                home_tab,
+                text="User Profile",
+                font=('Arial', 16)
+            )
+            label.pack(pady=20)
+            
+            info_frame = ttk.Frame(home_tab)
+            info_frame.pack(pady=10)
+            
+            ttk.Label(
+                info_frame,
+                text=f"Email: {self.user_email}"
+            ).grid(row=0, column=0, sticky='w', pady=5)
+            
+            ttk.Label(
+                info_frame,
+                text="Registration Date: 01/01/2023"
+            ).grid(row=1, column=0, sticky='w', pady=5)
+            
+            ttk.Label(
+                info_frame,
+                text="Last Login: Today"
+            ).grid(row=2, column=0, sticky='w', pady=5)
+            
+            ttk.Button(
+                home_tab,
+                text="Back to Home",
+                command=self.show_home
+            ).pack(pady=20)
+
+    def show_settings(self):
+        """Show application settings"""
+        if self.notebook:
+            self.notebook.select(0)
+            home_tab = self.notebook.winfo_children()[0]
+            
+            # Clear existing widgets
+            for child in home_tab.winfo_children():
+                child.destroy()
+            
+            label = ttk.Label(
+                home_tab,
+                text="Application Settings",
+                font=('Arial', 16)
+            )
+            label.pack(pady=20)
+            
+            settings_frame = ttk.Frame(home_tab)
+            settings_frame.pack(pady=10)
+            
+            ttk.Checkbutton(
+                settings_frame,
+                text="Email Notifications"
+            ).grid(row=0, column=0, sticky='w', pady=5)
+            
+            ttk.Checkbutton(
+                settings_frame,
+                text="Dark Mode"
+            ).grid(row=1, column=0, sticky='w', pady=5)
+            
+            ttk.Label(
+                settings_frame,
+                text="Theme:"
+            ).grid(row=2, column=0, sticky='w', pady=5)
+            
+            ttk.Combobox(
+                settings_frame,
+                values=["Light", "Dark", "System"]
+            ).grid(row=2, column=1, sticky='w', pady=5)
+            
+            ttk.Button(
+                home_tab,
+                text="Back to Home",
+                command=self.show_home
+            ).pack(pady=20)
+
+    def show_about(self):
+        """Show about information"""
+        if self.notebook:
+            self.notebook.select(0)
+            home_tab = self.notebook.winfo_children()[0]
+            
+            # Clear existing widgets
+            for child in home_tab.winfo_children():
+                child.destroy()
+            
+            label = ttk.Label(
+                home_tab,
+                text="About This Application",
+                font=('Arial', 16)
+            )
+            label.pack(pady=20)
+            
+            about_text = """PDF Viewer Application
+Version 1.0.0
+Developed with Python and Tkinter
+
+© 2025 All rights reserved"""
+            
+            ttk.Label(
+                home_tab,
+                text=about_text,
+                justify='left'
+            ).pack(pady=10)
+            
+            ttk.Button(
+                home_tab,
+                text="Back to Home",
+                command=self.show_home
+            ).pack(pady=20)
+
+# Login Window
+class LoginApplication:
+    def __init__(self, root):
+        self.root = root
+        self.configure_window()
+        DatabaseManager.initialize()
+        self.setup_ui()
+
+    def configure_window(self):
+        """Configure login window settings"""
+        self.root.title("Login System")
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = int(screen_width * 0.4)
+        window_height = int(screen_height * 0.4)
+        position_x = (screen_width - window_width) // 2
+        position_y = (screen_height - window_height) // 2
+        self.root.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
+
+    def setup_ui(self):
+        """Set up login interface"""
+        main_frame = ttk.Frame(self.root, padding=20)
+        main_frame.pack(expand=True, fill='both')
         
-        self.entry_email.grid(row=0, column=1, pady=10, padx=5)
-        self.entry_senha.grid(row=1, column=1, pady=10, padx=5)
-        
-        self.btn_frame.grid(row=2, columnspan=2, pady=20)
-        self.btn_login.pack(side='left', padx=10)
-        self.btn_cadastrar.pack(side='left', padx=10)
-        
-        #configurar redimensionamento
-        self.root.bind('<Configure>', self.on_resize)
-    
-    def on_resize(self, event):
-        #ajustar tamanho da fonte baseado na altura da janela
-        new_font_size = max(10, int(self.root.winfo_height() / 50))
-        self.style.configure('TLabel', font=('Arial', new_font_size))
-        self.style.configure('TButton', font=('Arial', new_font_size))
-        self.style.configure('TEntry', font=('Arial', new_font_size))
-    
-    def fazer_login(self):
-        email = self.entry_email.get()
-        senha = self.entry_senha.get()
-        
-        if not email or not senha:
-            messagebox.showerror("Erro", "Preencha todos os campos!")
-            return
-        
-        if verificar_login(email, senha):
-            messagebox.showinfo("Sucesso", "Login realizado com sucesso!")
-            #abrir aplicação principal aqui
-        else:
-            messagebox.showerror("Erro", "Email ou senha incorretos!")
-    
-    def abrir_tela_cadastro(self):
-        self.tela_cadastro = tk.Toplevel(self.root)
-        self.tela_cadastro.title("Cadastro de Usuário")
-        
-        #centralizar janela de cadastro
-        window_width = int(self.root.winfo_width() * 0.8)
-        window_height = int(self.root.winfo_height() * 0.8)
-        position_x = self.root.winfo_x() + (self.root.winfo_width() - window_width) // 2
-        position_y = self.root.winfo_y() + (self.root.winfo_height() - window_height) // 2
-        
-        self.tela_cadastro.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
-        
-        #frame do formulário
-        form_frame = ttk.Frame(self.tela_cadastro)
+        form_frame = ttk.Frame(main_frame)
         form_frame.place(relx=0.5, rely=0.5, anchor='center')
         
-        #widgets
-        labels = ["Email:", "Senha:", "Confirmar Senha:"]
-        self.entries = []
+        ttk.Label(
+            form_frame,
+            text="Email:"
+        ).grid(row=0, column=0, sticky="e", pady=10, padx=5)
+        
+        email_entry = ttk.Entry(form_frame, width=30)
+        email_entry.grid(row=0, column=1, pady=10, padx=5)
+        
+        ttk.Label(
+            form_frame,
+            text="Password:"
+        ).grid(row=1, column=0, sticky="e", pady=10, padx=5)
+        
+        password_entry = ttk.Entry(form_frame, width=30, show="*")
+        password_entry.grid(row=1, column=1, pady=10, padx=5)
+        
+        button_frame = ttk.Frame(form_frame)
+        button_frame.grid(row=2, columnspan=2, pady=20)
+        
+        ttk.Button(
+            button_frame,
+            text="Login",
+            command=lambda: self.attempt_login(
+                email_entry.get(),
+                password_entry.get()
+            )
+        ).pack(side='left', padx=10)
+        
+        ttk.Button(
+            button_frame,
+            text="Register",
+            command=lambda: self.show_registration()
+        ).pack(side='left', padx=10)
+
+    def attempt_login(self, email, password):
+        """Attempt user login"""
+        if not email or not password:
+            messagebox.showerror("Error", "Please fill in all fields!")
+            return
+        
+        if DatabaseManager.verify_login(email, password):
+            messagebox.showinfo("Success", "Login successful!")
+            self.launch_main_app(email)
+        else:
+            messagebox.showerror("Error", "Invalid email or password!")
+
+    def show_registration(self):
+        """Show registration dialog"""
+        register_window = tk.Toplevel(self.root)
+        register_window.title("User Registration")
+        
+        # Center the window
+        window_width = 400
+        window_height = 300
+        position_x = self.root.winfo_x() + (self.root.winfo_width() - window_width) // 2
+        position_y = self.root.winfo_y() + (self.root.winfo_height() - window_height) // 2
+        register_window.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
+        
+        form_frame = ttk.Frame(register_window, padding=20)
+        form_frame.pack(expand=True, fill='both')
+        
+        labels = ["Email:", "Password:", "Confirm Password:"]
+        entries = []
         
         for i, text in enumerate(labels):
-            label = ttk.Label(form_frame, text=text)
-            entry = ttk.Entry(form_frame, width=30, show="*" if i > 0 else "")
-            label.grid(row=i, column=0, sticky="e", pady=10, padx=5)
+            ttk.Label(
+                form_frame,
+                text=text
+            ).grid(row=i, column=0, sticky="e", pady=10, padx=5)
+            
+            entry = ttk.Entry(
+                form_frame,
+                width=30,
+                show="*" if i > 0 else ""
+            )
             entry.grid(row=i, column=1, pady=10, padx=5)
-            self.entries.append(entry)
+            entries.append(entry)
         
-        btn_cadastrar = ttk.Button(form_frame, text="Cadastrar", 
-                                 command=lambda: self.realizar_cadastro(
-                                     self.entries[0].get(),
-                                     self.entries[1].get(),
-                                     self.entries[2].get()
-                                 ))
-        btn_cadastrar.grid(row=3, columnspan=2, pady=20)
-    
-    def realizar_cadastro(self, email, senha, conf_senha):
-        if not all([email, senha, conf_senha]):
-            messagebox.showerror("Erro", "Preencha todos os campos!")
-            return
-        
-        if senha != conf_senha:
-            messagebox.showerror("Erro", "As senhas não coincidem!")
-            return
-        
-        if len(senha) < 6:
-            messagebox.showerror("Erro", "A senha deve ter pelo menos 6 caracteres!")
-            return
-        
-        if cadastrar_usuario(email, senha):
-            messagebox.showinfo("Sucesso", "Cadastro realizado com sucesso!")
-            self.tela_cadastro.destroy()
-        else:
-            messagebox.showerror("Erro", "Email já cadastrado!")
+        ttk.Button(
+            form_frame,
+            text="Register",
+            command=lambda: self.process_registration(
+                entries[0].get(),
+                entries[1].get(),
+                entries[2].get(),
+                register_window
+            )
+        ).grid(row=3, columnspan=2, pady=20)
 
-#iniciar aplicação
-if __name__ == "__main__":
+    def process_registration(self, email, password, confirm_password, window):
+        """Process user registration"""
+        if not all([email, password, confirm_password]):
+            messagebox.showerror("Error", "Please fill in all fields!")
+            return
+        
+        if "@" not in email or "." not in email:
+            messagebox.showerror("Error", "Please enter a valid email address!")
+            return
+        
+        if password != confirm_password:
+            messagebox.showerror("Error", "Passwords do not match!")
+            return
+        
+        if len(password) < 6:
+            messagebox.showerror("Error", "Password must be at least 6 characters!")
+            return
+        
+        if DatabaseManager.register_user(email, password):
+            messagebox.showinfo("Success", "Registration successful!")
+            window.destroy()
+
+    def launch_main_app(self, email):
+        """Launch the main application"""
+        self.root.destroy()
+        root = tk.Tk()
+        MainApplication(root, email)
+        root.mainloop()
+
+def main():
+    """Application entry point"""
     root = tk.Tk()
-    app = ResponsiveLoginApp(root)
+    LoginApplication(root)
     root.mainloop()
+
+if __name__ == "__main__":
+    main()
