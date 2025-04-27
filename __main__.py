@@ -6,6 +6,8 @@ import os
 import fitz  # PyMuPDF
 from PIL import Image, ImageTk
 import warnings
+import shutil
+from datetime import datetime
 
 # Suppress warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="fitz")
@@ -22,6 +24,17 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     email TEXT UNIQUE NOT NULL,
                     senha_hash TEXT NOT NULL
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS arquivos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    usuario_id INTEGER NOT NULL,
+                    nome_arquivo TEXT NOT NULL,
+                    caminho_arquivo TEXT NOT NULL,
+                    tipo_arquivo TEXT NOT NULL,
+                    data_upload TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
                 )
             ''')
             conn.commit()
@@ -66,6 +79,85 @@ class DatabaseManager:
                 return False
         except Exception as e:
             messagebox.showerror("Error", f"Login verification failed: {str(e)}")
+            return False
+
+    @staticmethod
+    def get_user_id(email):
+        """Get user ID by email"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT id FROM usuarios WHERE email = ?',
+                    (email,)
+                )
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to get user ID: {str(e)}")
+            return None
+
+    @staticmethod
+    def save_file(user_id, filename, filepath, file_type):
+        """Save file information to database"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'INSERT INTO arquivos (usuario_id, nome_arquivo, caminho_arquivo, tipo_arquivo) VALUES (?, ?, ?, ?)',
+                    (user_id, filename, filepath, file_type)
+                )
+                conn.commit()
+            return True
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save file: {str(e)}")
+            return False
+
+    @staticmethod
+    def get_user_files(user_id):
+        """Get all files for a user"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT id, nome_arquivo, tipo_arquivo, data_upload FROM arquivos WHERE usuario_id = ? ORDER BY data_upload DESC',
+                    (user_id,)
+                )
+                return cursor.fetchall()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to get files: {str(e)}")
+            return []
+
+    @staticmethod
+    def get_file_path(file_id):
+        """Get file path by file ID"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT caminho_arquivo FROM arquivos WHERE id = ?',
+                    (file_id,)
+                )
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to get file path: {str(e)}")
+            return None
+
+    @staticmethod
+    def delete_file(file_id):
+        """Delete a file record from database"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM arquivos WHERE id = ?',
+                    (file_id,)
+                )
+                conn.commit()
+            return True
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete file: {str(e)}")
             return False
 
 # Improved PDF Viewer Component
@@ -304,6 +396,7 @@ class MainApplication:
     def __init__(self, root, user_email):
         self.root = root
         self.user_email = user_email
+        self.user_id = DatabaseManager.get_user_id(user_email)
         self.notebook = None
         self.pdf_viewer = None
         
@@ -362,8 +455,194 @@ class MainApplication:
         pdf_tab = ttk.Frame(self.notebook)
         self.notebook.add(pdf_tab, text="PDF Viewer")
         
+        # Library tab
+        library_tab = ttk.Frame(self.notebook)
+        self.notebook.add(library_tab, text="My Library")
+        
         self.pdf_viewer = PDFViewer(pdf_tab)
+        self.setup_library_tab(library_tab)
         self.show_home()
+
+    def setup_library_tab(self, tab):
+        """Set up the library tab interface"""
+        # Upload button
+        upload_frame = ttk.Frame(tab)
+        upload_frame.pack(fill='x', pady=10)
+        
+        ttk.Button(
+            upload_frame,
+            text="Upload File",
+            command=self.upload_file
+        ).pack(side='left', padx=10)
+        
+        # File list
+        self.file_list_frame = ttk.Frame(tab)
+        self.file_list_frame.pack(expand=True, fill='both', pady=10)
+        
+        # Refresh button
+        ttk.Button(
+            tab,
+            text="Refresh List",
+            command=self.refresh_file_list
+        ).pack(pady=10)
+        
+        # Load initial file list
+        self.refresh_file_list()
+
+    def upload_file(self):
+        """Handle file upload"""
+        filetypes = [
+            ("PDF Files", "*.pdf"),
+            ("Text Files", "*.txt"),
+            ("Image Files", "*.png *.jpg *.jpeg"),
+            ("All Files", "*.*")
+        ]
+        
+        filepath = filedialog.askopenfilename(
+            title="Select File to Upload",
+            filetypes=filetypes
+        )
+        
+        if filepath:
+            filename = os.path.basename(filepath)
+            file_type = os.path.splitext(filename)[1].lower()
+            
+            # Create a directory for user files if it doesn't exist
+            user_dir = os.path.join("user_files", str(self.user_id))
+            os.makedirs(user_dir, exist_ok=True)
+            
+            # Copy file to user directory
+            dest_path = os.path.join(user_dir, filename)
+            try:
+                shutil.copy2(filepath, dest_path)
+                
+                # Save to database
+                if DatabaseManager.save_file(self.user_id, filename, dest_path, file_type):
+                    messagebox.showinfo("Success", f"File '{filename}' uploaded successfully!")
+                    self.refresh_file_list()
+                else:
+                    os.remove(dest_path)  # Remove the file if database save failed
+                    
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to upload file: {str(e)}")
+
+    def refresh_file_list(self):
+        """Refresh the list of files in the library"""
+        # Clear current list
+        for widget in self.file_list_frame.winfo_children():
+            widget.destroy()
+        
+        # Get files from database
+        files = DatabaseManager.get_user_files(self.user_id)
+        
+        if not files:
+            ttk.Label(
+                self.file_list_frame,
+                text="No files found in your library.",
+                font=('Arial', 12)
+            ).pack(expand=True, pady=50)
+            return
+        
+        # Create a treeview to display files
+        columns = ("ID", "Filename", "Type", "Date")
+        tree = ttk.Treeview(
+            self.file_list_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse"
+        )
+        
+        # Configure columns
+        tree.column("ID", width=50, anchor='center')
+        tree.column("Filename", width=300, anchor='w')
+        tree.column("Type", width=100, anchor='center')
+        tree.column("Date", width=150, anchor='center')
+        
+        # Add headings
+        for col in columns:
+            tree.heading(col, text=col)
+        
+        # Add files to treeview
+        for file in files:
+            tree.insert("", "end", values=file)
+        
+        tree.pack(expand=True, fill='both', padx=10, pady=10)
+        
+        # Add buttons for file actions
+        button_frame = ttk.Frame(self.file_list_frame)
+        button_frame.pack(pady=10)
+        
+        ttk.Button(
+            button_frame,
+            text="Open File",
+            command=lambda: self.open_selected_file(tree)
+        ).pack(side='left', padx=10)
+        
+        ttk.Button(
+            button_frame,
+            text="Delete File",
+            command=lambda: self.delete_selected_file(tree)
+        ).pack(side='left', padx=10)
+
+    def open_selected_file(self, tree):
+        """Open the selected file"""
+        selected_item = tree.focus()
+        if not selected_item:
+            messagebox.showwarning("Warning", "Please select a file first!")
+            return
+        
+        file_id = tree.item(selected_item)['values'][0]
+        file_path = DatabaseManager.get_file_path(file_id)
+        
+        if not file_path:
+            messagebox.showerror("Error", "File not found!")
+            return
+        
+        try:
+            if file_path.lower().endswith('.pdf'):
+                # Open in PDF viewer tab
+                self.notebook.select(1)  # Switch to PDF viewer tab
+                self.pdf_viewer.pdf_doc = fitz.open(file_path)
+                self.pdf_viewer.current_page = 0
+                self.pdf_viewer.render_page()
+                self.pdf_viewer.update_controls()
+            else:
+                # Open with default application
+                os.startfile(file_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open file: {str(e)}")
+
+    def delete_selected_file(self, tree):
+        """Delete the selected file"""
+        selected_item = tree.focus()
+        if not selected_item:
+            messagebox.showwarning("Warning", "Please select a file first!")
+            return
+        
+        file_id = tree.item(selected_item)['values'][0]
+        file_path = DatabaseManager.get_file_path(file_id)
+        
+        if not file_path:
+            messagebox.showerror("Error", "File not found!")
+            return
+        
+        if messagebox.askyesno(
+            "Confirm Delete",
+            "Are you sure you want to delete this file? This action cannot be undone."
+        ):
+            try:
+                # Delete from filesystem
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                
+                # Delete from database
+                if DatabaseManager.delete_file(file_id):
+                    messagebox.showinfo("Success", "File deleted successfully!")
+                    self.refresh_file_list()
+                else:
+                    messagebox.showerror("Error", "Failed to delete file record!")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete file: {str(e)}")
 
     def show_home(self):
         """Show the home screen"""
@@ -402,6 +681,12 @@ class MainApplication:
                 button_frame,
                 text="Open PDF Viewer",
                 command=lambda: self.notebook.select(1)
+            ).pack(side='left', padx=10)
+            
+            ttk.Button(
+                button_frame,
+                text="Open My Library",
+                command=lambda: self.notebook.select(2)
             ).pack(side='left', padx=10)
 
     def show_profile(self):
