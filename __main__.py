@@ -1,18 +1,17 @@
 import sqlite3
 import bcrypt
-import tkinter as tk
-from tkinter import messagebox, ttk, filedialog
 import os
-import fitz  # PyMuPDF
-from PIL import Image, ImageTk
-import warnings
 import shutil
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, simpledialog
+import fitz  # PyMuPDF
+from PIL import Image, ImageTk, ImageDraw
+import warnings
 from datetime import datetime
 
 # Suppress warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="fitz")
 
-# Database Configuration
 class DatabaseManager:
     @staticmethod
     def initialize():
@@ -37,6 +36,20 @@ class DatabaseManager:
                     FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS anotacoes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    arquivo_id INTEGER NOT NULL,
+                    pagina INTEGER NOT NULL,
+                    x1 REAL NOT NULL,
+                    y1 REAL NOT NULL,
+                    x2 REAL NOT NULL,
+                    y2 REAL NOT NULL,
+                    texto TEXT,
+                    cor TEXT NOT NULL,
+                    FOREIGN KEY (arquivo_id) REFERENCES arquivos (id)
+                )
+            ''')
             conn.commit()
 
     @staticmethod
@@ -53,12 +66,12 @@ class DatabaseManager:
                     (email, password_hash.decode('utf-8'))
                 )
                 conn.commit()
+                
             return True
         except sqlite3.IntegrityError:
-            messagebox.showerror("Error", "Email already registered!")
             return False
         except Exception as e:
-            messagebox.showerror("Error", f"Registration failed: {str(e)}")
+            print(f"Registration failed: {str(e)}")
             return False
 
     @staticmethod
@@ -69,8 +82,7 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute(
                     'SELECT senha_hash FROM usuarios WHERE email = ?',
-                    (email,)
-                )
+                    (email,))
                 result = cursor.fetchone()
                 
                 if result:
@@ -78,7 +90,7 @@ class DatabaseManager:
                     return bcrypt.checkpw(password.encode('utf-8'), stored_hash)
                 return False
         except Exception as e:
-            messagebox.showerror("Error", f"Login verification failed: {str(e)}")
+            print(f"Login verification failed: {str(e)}")
             return False
 
     @staticmethod
@@ -89,12 +101,11 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute(
                     'SELECT id FROM usuarios WHERE email = ?',
-                    (email,)
-                )
+                    (email,))
                 result = cursor.fetchone()
                 return result[0] if result else None
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to get user ID: {str(e)}")
+            print(f"Failed to get user ID: {str(e)}")
             return None
 
     @staticmethod
@@ -105,13 +116,12 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute(
                     'INSERT INTO arquivos (usuario_id, nome_arquivo, caminho_arquivo, tipo_arquivo) VALUES (?, ?, ?, ?)',
-                    (user_id, filename, filepath, file_type)
-                )
+                    (user_id, filename, filepath, file_type))
                 conn.commit()
-            return True
+                return cursor.lastrowid
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save file: {str(e)}")
-            return False
+            print(f"Failed to save file: {str(e)}")
+            return None
 
     @staticmethod
     def get_user_files(user_id):
@@ -121,11 +131,10 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute(
                     'SELECT id, nome_arquivo, tipo_arquivo, data_upload FROM arquivos WHERE usuario_id = ? ORDER BY data_upload DESC',
-                    (user_id,)
-                )
+                    (user_id,))
                 return cursor.fetchall()
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to get files: {str(e)}")
+            print(f"Failed to get files: {str(e)}")
             return []
 
     @staticmethod
@@ -136,12 +145,11 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute(
                     'SELECT caminho_arquivo FROM arquivos WHERE id = ?',
-                    (file_id,)
-                )
+                    (file_id,))
                 result = cursor.fetchone()
                 return result[0] if result else None
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to get file path: {str(e)}")
+            print(f"Failed to get file path: {str(e)}")
             return None
 
     @staticmethod
@@ -152,15 +160,62 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute(
                     'DELETE FROM arquivos WHERE id = ?',
-                    (file_id,)
-                )
+                    (file_id,))
                 conn.commit()
             return True
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to delete file: {str(e)}")
+            print(f"Failed to delete file: {str(e)}")
             return False
 
-# Improved PDF Viewer Component
+    @staticmethod
+    def save_annotation(file_id, page, x1, y1, x2, y2, text, color):
+        """Save an annotation to the database"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO anotacoes 
+                    (arquivo_id, pagina, x1, y1, x2, y2, texto, cor) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                    (file_id, page, x1, y1, x2, y2, text, color))
+                conn.commit()
+            return True
+        except Exception as e:
+            print(f"Failed to save annotation: {str(e)}")
+            return False
+
+    @staticmethod
+    def get_annotations(file_id, page):
+        """Get all annotations for a specific page of a file"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''SELECT x1, y1, x2, y2, texto, cor 
+                    FROM anotacoes 
+                    WHERE arquivo_id = ? AND pagina = ?''',
+                    (file_id, page))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"Failed to get annotations: {str(e)}")
+            return []
+
+    @staticmethod
+    def delete_annotation(file_id, page, x1, y1):
+        """Delete an annotation from the database"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''DELETE FROM anotacoes 
+                    WHERE arquivo_id = ? AND pagina = ? AND x1 = ? AND y1 = ?''',
+                    (file_id, page, x1, y1))
+                conn.commit()
+            return True
+        except Exception as e:
+            print(f"Failed to delete annotation: {str(e)}")
+            return False
+
 class PDFViewer:
     def __init__(self, parent):
         self.parent = parent
@@ -168,6 +223,12 @@ class PDFViewer:
         self.pdf_doc = None
         self.zoom_level = 1.0
         self.image_cache = []
+        self.file_id = None
+        self.annotation_mode = False
+        self.current_annotation = None
+        self.annotation_start = None
+        self.annotation_color = "red"
+        self.temp_annotation = None
         
         # Setup UI
         self.setup_ui()
@@ -225,6 +286,32 @@ class PDFViewer:
         )
         zoom_menu.pack(side='left')
 
+        # Annotation controls
+        annot_frame = ttk.Frame(control_frame)
+        annot_frame.pack(side='right', padx=20)
+        
+        self.btn_annotate = ttk.Button(
+            annot_frame,
+            text="Add Annotation",
+            command=self.toggle_annotation_mode
+        )
+        self.btn_annotate.pack(side='left', padx=5)
+        
+        color_frame = ttk.Frame(annot_frame)
+        color_frame.pack(side='left', padx=5)
+        
+        ttk.Label(color_frame, text="Color:").pack(side='left')
+        
+        self.color_var = tk.StringVar(value="red")
+        color_menu = ttk.OptionMenu(
+            color_frame,
+            self.color_var,
+            "red",
+            "red", "blue", "green", "yellow", "black",
+            command=self.change_annotation_color
+        )
+        color_menu.pack(side='left')
+
         # PDF display area
         self.setup_pdf_display()
 
@@ -262,15 +349,22 @@ class PDFViewer:
         
         # Frame to hold PDF image
         self.pdf_frame = ttk.Frame(self.canvas)
-        self.canvas.create_window(
+        self.canvas_frame = self.canvas.create_window(
             (0, 0), 
             window=self.pdf_frame, 
             anchor='nw',
             tags="pdf_frame"
         )
         
-        # Bind canvas resize event
+        # Label for PDF display
+        self.pdf_label = ttk.Label(self.pdf_frame)
+        self.pdf_label.pack()
+        
+        # Bind canvas events
         self.canvas.bind("<Configure>", self.center_content)
+        self.canvas.bind("<Button-1>", self.start_annotation)
+        self.canvas.bind("<B1-Motion>", self.draw_annotation)
+        self.canvas.bind("<ButtonRelease-1>", self.end_annotation)
 
     def open_pdf(self):
         """Open a PDF file dialog and load the selected file"""
@@ -289,6 +383,7 @@ class PDFViewer:
                 # Open new PDF
                 self.pdf_doc = fitz.open(filepath)
                 self.current_page = 0
+                self.file_id = None  # Reset file ID
                 self.render_page()
                 self.update_controls()
                 
@@ -299,7 +394,7 @@ class PDFViewer:
                 )
 
     def render_page(self):
-        """Render the current PDF page"""
+        """Render the current PDF page with annotations"""
         # Clear previous page
         for widget in self.pdf_frame.winfo_children():
             widget.destroy()
@@ -315,6 +410,21 @@ class PDFViewer:
             zoom_matrix = fitz.Matrix(self.zoom_level, self.zoom_level)
             pix = page.get_pixmap(matrix=zoom_matrix)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # Draw annotations if we have a file ID
+            if self.file_id:
+                db_annotations = DatabaseManager.get_annotations(self.file_id, self.current_page)
+                draw = ImageDraw.Draw(img)
+                
+                for annot in db_annotations:
+                    x1, y1, x2, y2, text, color = annot
+                    # Scale coordinates to current zoom level
+                    x1, y1, x2, y2 = x1*self.zoom_level, y1*self.zoom_level, x2*self.zoom_level, y2*self.zoom_level
+                    # Draw rectangle
+                    draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+                    # Draw text if exists
+                    if text:
+                        draw.text((x1, y1 - 15), text, fill=color)
             
             # Convert to PhotoImage and cache it
             photo = ImageTk.PhotoImage(image=img)
@@ -357,7 +467,7 @@ class PDFViewer:
         y = max((canvas_height - content_height) / 2, 0)
         
         # Update position
-        self.canvas.coords("pdf_frame", x, y)
+        self.canvas.coords(self.canvas_frame, x, y)
 
     def prev_page(self):
         """Go to previous page"""
@@ -390,6 +500,172 @@ class PDFViewer:
             self.btn_prev.config(state='disabled')
             self.btn_next.config(state='disabled')
             self.lbl_page.config(text="Page: 0/0")
+
+    def start_annotation(self, event):
+        """Start drawing an annotation"""
+        if not self.annotation_mode or not self.pdf_doc or not self.file_id:
+            return
+        
+        # Get coordinates relative to canvas
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        
+        # Get PDF frame position
+        frame_x, frame_y = self.canvas.coords(self.canvas_frame)
+        
+        # Calculate position relative to PDF content
+        x -= frame_x
+        y -= frame_y
+        
+        # Only start annotation if inside PDF content
+        if x >= 0 and y >= 0:
+            self.annotation_start = (x, y)
+            self.current_annotation = {
+                'x1': x,
+                'y1': y,
+                'x2': x,
+                'y2': y,
+                'color': self.annotation_color
+            }
+            
+            # Draw temporary rectangle
+            if self.temp_annotation:
+                self.canvas.delete(self.temp_annotation)
+            
+            self.temp_annotation = self.canvas.create_rectangle(
+                x + frame_x, y + frame_y,
+                x + frame_x, y + frame_y,
+                outline=self.annotation_color,
+                width=2,
+                tags="temp_annotation"
+            )
+
+    def draw_annotation(self, event):
+        """Draw the annotation rectangle as the mouse moves"""
+        if not self.annotation_mode or not self.annotation_start:
+            return
+        
+        # Get coordinates relative to canvas
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        
+        # Get PDF frame position
+        frame_x, frame_y = self.canvas.coords(self.canvas_frame)
+        
+        # Calculate position relative to PDF content
+        x -= frame_x
+        y -= frame_y
+        
+        # Update current annotation
+        if self.current_annotation:
+            self.current_annotation['x2'] = x
+            self.current_annotation['y2'] = y
+            
+            # Update temporary rectangle
+            x1, y1 = self.annotation_start
+            x2, y2 = x, y
+            
+            # Ensure proper coordinates
+            if x2 < x1:
+                x1, x2 = x2, x1
+            if y2 < y1:
+                y1, y2 = y2, y1
+                
+            # Update temporary annotation on canvas
+            if self.temp_annotation:
+                self.canvas.coords(
+                    self.temp_annotation,
+                    x1 + frame_x, y1 + frame_y,
+                    x2 + frame_x, y2 + frame_y
+                )
+
+    def end_annotation(self, event):
+        """Finish drawing the annotation and save it"""
+        if not self.annotation_mode or not self.annotation_start or not self.current_annotation:
+            return
+        
+        try:
+            # Get final coordinates
+            x = self.canvas.canvasx(event.x)
+            y = self.canvas.canvasy(event.y)
+            
+            # Get PDF frame position
+            frame_x, frame_y = self.canvas.coords(self.canvas_frame)
+            
+            # Calculate position relative to PDF content
+            x -= frame_x
+            y -= frame_y
+            
+            # Get annotation coordinates
+            x1, y1 = self.annotation_start
+            x2, y2 = x, y
+            
+            # Ensure proper coordinates
+            if x2 < x1:
+                x1, x2 = x2, x1
+            if y2 < y1:
+                y1, y2 = y2, y1
+                
+            # Skip if too small
+            if abs(x2 - x1) < 10 or abs(y2 - y1) < 10:
+                self.reset_annotation_state()
+                return
+                
+            # Ask for annotation text
+            text = simpledialog.askstring(
+                "Annotation Text",
+                "Enter annotation text (optional):",
+                parent=self.parent
+            )
+            
+            # Save to database (with original coordinates, not zoomed)
+            if self.file_id:
+                success = DatabaseManager.save_annotation(
+                    self.file_id,
+                    self.current_page,
+                    x1/self.zoom_level, y1/self.zoom_level,
+                    x2/self.zoom_level, y2/self.zoom_level,
+                    text,
+                    self.annotation_color
+                )
+                
+                if not success:
+                    messagebox.showerror("Error", "Failed to save annotation!")
+            
+            # Reset and re-render
+            self.reset_annotation_state()
+            self.render_page()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save annotation: {str(e)}")
+            self.reset_annotation_state()
+            self.render_page()
+
+    def reset_annotation_state(self):
+        """Reset annotation state"""
+        if self.temp_annotation:
+            self.canvas.delete(self.temp_annotation)
+            self.temp_annotation = None
+            
+        self.annotation_start = None
+        self.current_annotation = None
+
+    def toggle_annotation_mode(self):
+        """Toggle annotation mode on/off"""
+        self.annotation_mode = not self.annotation_mode
+        if self.annotation_mode:
+            self.btn_annotate.config(text="Cancel Annotation")
+            self.canvas.config(cursor="cross")
+        else:
+            self.btn_annotate.config(text="Add Annotation")
+            self.canvas.config(cursor="")
+            self.reset_annotation_state()
+
+    def change_annotation_color(self, color):
+        """Change the annotation color"""
+        self.annotation_color = color
+
+
 
 # Main Application Window
 class MainApplication:
@@ -465,28 +741,135 @@ class MainApplication:
 
     def setup_library_tab(self, tab):
         """Set up the library tab interface"""
+        # Search frame
+        search_frame = ttk.Frame(tab)
+        search_frame.pack(fill='x', pady=10, padx=10)
+        
+        ttk.Label(search_frame, text="Search:").pack(side='left', padx=5)
+        
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=40)
+        search_entry.pack(side='left', padx=5)
+        
+        ttk.Button(
+            search_frame,
+            text="Search",
+            command=self.search_files
+        ).pack(side='left', padx=5)
+        
+        ttk.Button(
+            search_frame,
+            text="Clear",
+            command=self.clear_search
+        ).pack(side='left', padx=5)
+        
         # Upload button
         upload_frame = ttk.Frame(tab)
-        upload_frame.pack(fill='x', pady=10)
+        upload_frame.pack(fill='x', pady=10, padx=10)
         
         ttk.Button(
             upload_frame,
             text="Upload File",
             command=self.upload_file
-        ).pack(side='left', padx=10)
+        ).pack(side='left', padx=5)
         
         # File list
         self.file_list_frame = ttk.Frame(tab)
-        self.file_list_frame.pack(expand=True, fill='both', pady=10)
+        self.file_list_frame.pack(expand=True, fill='both', pady=10, padx=10)
         
         # Refresh button
+        refresh_frame = ttk.Frame(tab)
+        refresh_frame.pack(fill='x', pady=10, padx=10)
+        
         ttk.Button(
-            tab,
+            refresh_frame,
             text="Refresh List",
             command=self.refresh_file_list
-        ).pack(pady=10)
+        ).pack(side='left', padx=5)
+        
+        # Bind Enter key to search
+        search_entry.bind('<Return>', lambda event: self.search_files())
         
         # Load initial file list
+        self.refresh_file_list()
+
+    def search_files(self):
+        """Search files based on the search term"""
+        search_term = self.search_var.get().lower()
+        
+        if not search_term:
+            self.refresh_file_list()
+            return
+        
+        # Get all files from database
+        all_files = DatabaseManager.get_user_files(self.user_id)
+        
+        if not all_files:
+            return
+        
+        # Filter files based on search term
+        filtered_files = [
+            file for file in all_files 
+            if (search_term in file[1].lower() or  # filename
+                search_term in file[2].lower())    # file type
+        ]
+        
+        # Clear current list
+        for widget in self.file_list_frame.winfo_children():
+            widget.destroy()
+        
+        if not filtered_files:
+            ttk.Label(
+                self.file_list_frame,
+                text="No files found matching your search.",
+                font=('Arial', 12)
+            ).pack(expand=True, pady=50)
+            return
+        
+        # Create a treeview to display filtered files
+        columns = ("ID", "Filename", "Type", "Date")
+        tree = ttk.Treeview(
+            self.file_list_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse"
+        )
+        
+        # Configure columns
+        tree.column("ID", width=50, anchor='center')
+        tree.column("Filename", width=300, anchor='w')
+        tree.column("Type", width=100, anchor='center')
+        tree.column("Date", width=150, anchor='center')
+        
+        # Add headings
+        for col in columns:
+            tree.heading(col, text=col)
+        
+        # Add filtered files to treeview
+        for file in filtered_files:
+            tree.insert("", "end", values=file)
+        
+        tree.pack(expand=True, fill='both', padx=10, pady=10)
+        
+        # Add buttons for file actions
+        button_frame = ttk.Frame(self.file_list_frame)
+        button_frame.pack(pady=10)
+        
+        ttk.Button(
+            button_frame,
+            text="Open File",
+            command=lambda: self.open_selected_file(tree)
+        ).pack(side='left', padx=10)
+        
+        ttk.Button(
+            button_frame,
+            text="Delete File",
+            command=lambda: self.delete_selected_file(tree)
+        ).pack(side='left', padx=10)
+
+    def clear_search(self):
+        """Clear the search and show all files"""
+        self.search_var.set("")
         self.refresh_file_list()
 
     def upload_file(self):
@@ -528,6 +911,12 @@ class MainApplication:
 
     def refresh_file_list(self):
         """Refresh the list of files in the library"""
+        search_term = self.search_var.get().lower()
+        
+        if search_term:
+            self.search_files()
+            return
+        
         # Clear current list
         for widget in self.file_list_frame.winfo_children():
             widget.destroy()
@@ -591,7 +980,8 @@ class MainApplication:
             messagebox.showwarning("Warning", "Please select a file first!")
             return
         
-        file_id = tree.item(selected_item)['values'][0]
+        file_info = tree.item(selected_item)['values']
+        file_id = file_info[0]
         file_path = DatabaseManager.get_file_path(file_id)
         
         if not file_path:
@@ -603,6 +993,7 @@ class MainApplication:
                 # Open in PDF viewer tab
                 self.notebook.select(1)  # Switch to PDF viewer tab
                 self.pdf_viewer.pdf_doc = fitz.open(file_path)
+                self.pdf_viewer.file_id = file_id  # Set the file ID for annotations
                 self.pdf_viewer.current_page = 0
                 self.pdf_viewer.render_page()
                 self.pdf_viewer.update_controls()
@@ -956,11 +1347,7 @@ class LoginApplication:
         MainApplication(root, email)
         root.mainloop()
 
-def main():
-    """Application entry point"""
-    root = tk.Tk()
-    LoginApplication(root)
-    root.mainloop()
-
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = LoginApplication(root)
+    root.mainloop()
