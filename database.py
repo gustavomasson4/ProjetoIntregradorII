@@ -40,6 +40,18 @@ class DatabaseManager:
                     FOREIGN KEY (arquivo_id) REFERENCES arquivos (id)
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS highlights (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    arquivo_id INTEGER NOT NULL,
+                    pagina INTEGER NOT NULL,
+                    texto_destacado TEXT NOT NULL,
+                    cor TEXT NOT NULL DEFAULT 'yellow',
+                    bbox TEXT, -- bounding box opcional: pode ser usado para guardar coordenadas como string JSON
+                    data_criacao TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (arquivo_id) REFERENCES arquivos (id)
+                )
+            ''')
             conn.commit()
 
     @staticmethod
@@ -49,7 +61,7 @@ class DatabaseManager:
             # Validação básica do email
             if not email or "@" not in email or "." not in email:
                 return False
-                
+
             # Validação da senha
             if not password or len(password) < 6:
                 return False
@@ -57,7 +69,7 @@ class DatabaseManager:
             # Gera o hash da senha
             salt = bcrypt.gensalt()
             password_hash = bcrypt.hashpw(password.encode('utf-8'), salt)
-            
+
             with sqlite3.connect('usuarios.db') as conn:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -65,7 +77,7 @@ class DatabaseManager:
                     (email, password_hash)
                 )
                 conn.commit()
-                
+
             return True
         except sqlite3.IntegrityError:
             # Email já existe
@@ -84,9 +96,12 @@ class DatabaseManager:
                     'SELECT senha_hash FROM usuarios WHERE email = ?',
                     (email,))
                 result = cursor.fetchone()
-                
+
                 if result:
-                    stored_hash = result[0].encode('utf-8')
+                    stored_hash = result[0]
+                    # Ajuste para lidar com tipos de bytes e string
+                    if isinstance(stored_hash, str):
+                        stored_hash = stored_hash.encode('utf-8')
                     return bcrypt.checkpw(password.encode('utf-8'), stored_hash)
                 return False
         except Exception as e:
@@ -214,4 +229,54 @@ class DatabaseManager:
             return True
         except Exception as e:
             print(f"Failed to delete annotation: {str(e)}")
+            return False
+
+    # ----------- MÉTODOS PARA HIGHLIGHTS (MARCA-TEXTO) -----------
+    @staticmethod
+    def save_highlight(file_id, page, texto_destacado, cor='yellow', bbox=None):
+        """Save a highlight (marca-texto) to the database"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO highlights 
+                    (arquivo_id, pagina, texto_destacado, cor, bbox)
+                    VALUES (?, ?, ?, ?, ?)''',
+                    (file_id, page, texto_destacado, cor, bbox))
+                conn.commit()
+            return True
+        except Exception as e:
+            print(f"Failed to save highlight: {str(e)}")
+            return False
+
+    @staticmethod
+    def get_highlights(file_id, page):
+        """Get all highlights for a specific page of a file"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''SELECT texto_destacado, cor, bbox, data_criacao
+                    FROM highlights
+                    WHERE arquivo_id = ? AND pagina = ?''',
+                    (file_id, page))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"Failed to get highlights: {str(e)}")
+            return []
+
+    @staticmethod
+    def delete_highlight(file_id, page, texto_destacado):
+        """Delete a highlight from the database"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''DELETE FROM highlights 
+                    WHERE arquivo_id = ? AND pagina = ? AND texto_destacado = ?''',
+                    (file_id, page, texto_destacado))
+                conn.commit()
+            return True
+        except Exception as e:
+            print(f"Failed to delete highlight: {str(e)}")
             return False
