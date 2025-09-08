@@ -22,6 +22,7 @@ class DatabaseManager:
                     nome_arquivo TEXT NOT NULL,
                     caminho_arquivo TEXT NOT NULL,
                     tipo_arquivo TEXT NOT NULL,
+                    favorito INTEGER DEFAULT 0,
                     data_upload TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
                 )
@@ -47,11 +48,18 @@ class DatabaseManager:
                     pagina INTEGER NOT NULL,
                     texto_destacado TEXT NOT NULL,
                     cor TEXT NOT NULL DEFAULT 'yellow',
-                    bbox TEXT, -- bounding box opcional: pode ser usado para guardar coordenadas como string JSON
+                    bbox TEXT,
                     data_criacao TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (arquivo_id) REFERENCES arquivos (id)
                 )
             ''')
+            
+            # Adicionar a coluna favorito se ela não existir (para compatibilidade com DBs existentes)
+            try:
+                cursor.execute('ALTER TABLE arquivos ADD COLUMN favorito INTEGER DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass  # Coluna já existe
+                
             conn.commit()
 
     @staticmethod
@@ -130,8 +138,8 @@ class DatabaseManager:
             with sqlite3.connect('usuarios.db') as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    'INSERT INTO arquivos (usuario_id, nome_arquivo, caminho_arquivo, tipo_arquivo) VALUES (?, ?, ?, ?)',
-                    (user_id, filename, filepath, file_type))
+                    'INSERT INTO arquivos (usuario_id, nome_arquivo, caminho_arquivo, tipo_arquivo, favorito) VALUES (?, ?, ?, ?, ?)',
+                    (user_id, filename, filepath, file_type, 0))
                 conn.commit()
                 return cursor.lastrowid
         except Exception as e:
@@ -139,14 +147,19 @@ class DatabaseManager:
             return None
 
     @staticmethod
-    def get_user_files(user_id):
+    def get_user_files(user_id, favorites_only=False):
         """Get all files for a user"""
         try:
             with sqlite3.connect('usuarios.db') as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    'SELECT id, nome_arquivo, tipo_arquivo, data_upload FROM arquivos WHERE usuario_id = ? ORDER BY data_upload DESC',
-                    (user_id,))
+                if favorites_only:
+                    cursor.execute(
+                        'SELECT id, nome_arquivo, tipo_arquivo, data_upload, favorito FROM arquivos WHERE usuario_id = ? AND favorito = 1 ORDER BY data_upload DESC',
+                        (user_id,))
+                else:
+                    cursor.execute(
+                        'SELECT id, nome_arquivo, tipo_arquivo, data_upload, favorito FROM arquivos WHERE usuario_id = ? ORDER BY favorito DESC, data_upload DESC',
+                        (user_id,))
                 return cursor.fetchall()
         except Exception as e:
             print(f"Failed to get files: {str(e)}")
@@ -173,13 +186,49 @@ class DatabaseManager:
         try:
             with sqlite3.connect('usuarios.db') as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    'DELETE FROM arquivos WHERE id = ?',
-                    (file_id,))
+                # Deletar também as anotações e highlights relacionados
+                cursor.execute('DELETE FROM anotacoes WHERE arquivo_id = ?', (file_id,))
+                cursor.execute('DELETE FROM highlights WHERE arquivo_id = ?', (file_id,))
+                cursor.execute('DELETE FROM arquivos WHERE id = ?', (file_id,))
                 conn.commit()
             return True
         except Exception as e:
             print(f"Failed to delete file: {str(e)}")
+            return False
+
+    @staticmethod
+    def toggle_favorite(file_id):
+        """Toggle favorite status of a file"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                # Primeiro, obter o status atual
+                cursor.execute('SELECT favorito FROM arquivos WHERE id = ?', (file_id,))
+                result = cursor.fetchone()
+                if result:
+                    current_status = result[0]
+                    new_status = 1 if current_status == 0 else 0
+                    cursor.execute(
+                        'UPDATE arquivos SET favorito = ? WHERE id = ?',
+                        (new_status, file_id))
+                    conn.commit()
+                    return new_status
+                return None
+        except Exception as e:
+            print(f"Failed to toggle favorite: {str(e)}")
+            return None
+
+    @staticmethod
+    def is_favorite(file_id):
+        """Check if a file is marked as favorite"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT favorito FROM arquivos WHERE id = ?', (file_id,))
+                result = cursor.fetchone()
+                return result[0] == 1 if result else False
+        except Exception as e:
+            print(f"Failed to check favorite status: {str(e)}")
             return False
 
     @staticmethod

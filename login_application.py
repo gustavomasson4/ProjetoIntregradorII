@@ -203,7 +203,7 @@ class LoginApplication:
         self.root.destroy()
         root = tk.Tk()
         from application import MainApplication
-        MainApplication(root, email, is_anonymous=is_anonymous)
+        MainApplication(root, email)
         root.mainloop()
 
 if __name__ == "__main__":

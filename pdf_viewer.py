@@ -102,6 +102,171 @@ class PDFViewer:
 
         self.setup_pdf_display()
 
+        search_frame = ttk.Frame(control_frame)
+        search_frame.pack(side='right', padx=20)
+
+        ttk.Label(search_frame, text="Search:").pack(side='left')
+
+        # Frame de busca
+        search_frame = ttk.Frame(control_frame)
+        search_frame.pack(side='right', padx=20)
+
+        ttk.Label(search_frame, text="Search:").pack(side='left')
+
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=20)
+        search_entry.pack(side='left', padx=5)
+
+        ttk.Button(
+            search_frame,
+            text="Find",
+            command=self.search_text
+        ).pack(side='left', padx=5)
+
+        ttk.Button(
+            search_frame,
+            text="Clear",
+            command=self.clear_search
+        ).pack(side='left', padx=5)
+
+        # Bind Ctrl+F para ativar a busca
+        self.parent.bind('<Control-f>', lambda e: search_entry.focus())
+        search_entry.bind('<Return>', lambda e: self.search_text())
+
+        nav_frame = ttk.Frame(search_frame)
+        nav_frame.pack(side='left', padx=5)
+
+        ttk.Button(
+            nav_frame,
+            text="◄ Prev",
+            command=self.prev_search_result
+        ).pack(side='left', padx=2)
+
+        ttk.Button(
+            nav_frame,
+            text="Next ►",
+            command=self.next_search_result
+        ).pack(side='left', padx=2)
+
+        # Variáveis para controle de navegação
+        self.search_results = []
+        self.current_search_index = -1
+
+    def search_text(self):
+        """Buscar texto no PDF"""
+        search_term = self.search_var.get().strip()
+        if not search_term or not self.pdf_doc:
+            return
+
+        try:
+            page = self.pdf_doc.load_page(self.current_page)
+            self.search_results = page.search_for(search_term)
+
+            if not self.search_results:
+                messagebox.showinfo("Search", f"Text '{search_term}' not found on this page")
+                return
+
+            self.current_search_index = 0
+            self.show_search_result(0)
+
+        except Exception as e:
+            messagebox.showerror("Search Error", f"Failed to search text: {str(e)}")
+
+    def show_search_result(self, index):
+        """Mostrar resultado específico da busca"""
+        self.clear_search_highlights()
+
+        if 0 <= index < len(self.search_results):
+            rect = self.search_results[index]
+            self.highlight_text(rect, self.search_var.get())
+
+            # Scroll para o resultado
+            self.scroll_to_highlight(rect)
+
+    def scroll_to_highlight(self, rect):
+        """Fazer scroll para o highlight"""
+        frame_x, frame_y = self.image_origin
+        zoom = self.zoom_level
+
+        y_pos = frame_y + rect.y0 * zoom
+        self.canvas.yview_moveto(y_pos / self.canvas.winfo_height())
+
+    def prev_search_result(self):
+        """Navegar para resultado anterior"""
+        if self.search_results:
+            self.current_search_index = (self.current_search_index - 1) % len(self.search_results)
+            self.show_search_result(self.current_search_index)
+
+    def next_search_result(self):
+        """Navegar para próximo resultado"""
+        if self.search_results:
+            self.current_search_index = (self.current_search_index + 1) % len(self.search_results)
+            self.show_search_result(self.current_search_index)
+
+    def search_text(self):
+        """Buscar texto no PDF"""
+        search_term = self.search_var.get().strip()
+        if not search_term or not self.pdf_doc:
+            return
+
+        try:
+            page = self.pdf_doc.load_page(self.current_page)
+            text_instances = page.search_for(search_term)
+
+            if not text_instances:
+                messagebox.showinfo("Search", f"Text '{search_term}' not found on this page")
+                return
+
+            # Limpar highlights anteriores
+            self.clear_search_highlights()
+
+            # Destacar todas as ocorrências
+            for rect in text_instances:
+                self.highlight_text(rect, search_term)
+
+        except Exception as e:
+            messagebox.showerror("Search Error", f"Failed to search text: {str(e)}")
+
+    def highlight_text(self, rect, search_term):
+        """Destacar texto encontrado no canvas"""
+        frame_x, frame_y = self.image_origin
+        zoom = self.zoom_level
+
+        # Converter coordenadas do PDF para coordenadas do canvas
+        x0 = frame_x + rect.x0 * zoom
+        y0 = frame_y + rect.y0 * zoom
+        x1 = frame_x + rect.x1 * zoom
+        y1 = frame_y + rect.y1 * zoom
+
+        # Criar retângulo de highlight
+        highlight = self.canvas.create_rectangle(
+            x0, y0, x1, y1,
+            outline="red",
+            fill="yellow",
+            stipple="gray50",  # Efeito semi-transparente
+            width=2,
+            tags="search_highlight"
+        )
+
+        # Guardar referência para poder remover depois
+        if not hasattr(self, 'search_highlights'):
+            self.search_highlights = []
+        self.search_highlights.append(highlight)
+
+    def clear_search_highlights(self):
+        """Limpar todos os highlights de busca"""
+        if hasattr(self, 'search_highlights'):
+            for highlight in self.search_highlights:
+                self.canvas.delete(highlight)
+            self.search_highlights = []
+        else:
+            self.canvas.delete("search_highlight")
+
+    def clear_search(self):
+        """Limpar busca"""
+        self.search_var.set("")
+        self.clear_search_highlights()
+
     def setup_pdf_display(self):
         container = ttk.Frame(self.main_frame)
         container.pack(expand=True, fill='both')
@@ -442,3 +607,4 @@ class PDFViewer:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save annotation: {str(e)}")
             self.reset_annotation_state()
+
