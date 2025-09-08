@@ -251,7 +251,7 @@ class MainApplication:
         # Add files to treeview
         for file in files:
             file_id, filename, file_type, date, is_favorite = file
-            favorite_status = "⭐" if is_favorite else "☆"
+            favorite_status = "⭐" if is_favorite else "⨯"
             tree.insert("", "end", values=(file_id, filename, file_type, date, favorite_status))
         
         tree.pack(expand=True, fill='both', padx=10, pady=10)
