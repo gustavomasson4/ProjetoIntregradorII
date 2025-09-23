@@ -4,6 +4,7 @@ import os
 import shutil
 from database import DatabaseManager
 from pdf_viewer import PDFViewer
+from theme_manager import theme_manager
 import fitz
 
 class GroupDialog:
@@ -27,6 +28,7 @@ class GroupDialog:
         self.dialog.geometry(f"400x250+{x}+{y}")
         
         self.setup_ui()
+        self.apply_theme()
         
     def setup_ui(self):
         main_frame = ttk.Frame(self.dialog, padding=20)
@@ -63,6 +65,11 @@ class GroupDialog:
         ttk.Button(button_frame, text="Cancel", command=self.dialog.destroy).pack(side='left', padx=10)
         
         main_frame.grid_columnconfigure(1, weight=1)
+        
+    def apply_theme(self):
+        """Apply current theme to dialog"""
+        theme_manager.apply_theme_to_widget(self.dialog)
+        theme_manager.apply_theme_recursive(self.dialog)
         
     def choose_color(self):
         color = colorchooser.askcolor(initialcolor=self.selected_color)[1]
@@ -105,24 +112,25 @@ class AnotacaoDialog:
         self.dialog.grab_set()
         self.dialog.transient(parent)
         
-        # Centralizar
+        # Center dialog
         self.dialog.update_idletasks()
         x = (self.dialog.winfo_screenwidth() - 600) // 2
         y = (self.dialog.winfo_screenheight() - 500) // 2
         self.dialog.geometry(f"600x500+{x}+{y}")
         
         self.setup_ui()
+        self.apply_theme()
     
     def setup_ui(self):
         main_frame = ttk.Frame(self.dialog, padding=20)
         main_frame.pack(fill='both', expand=True)
         
-        # Título
+        # Title
         ttk.Label(main_frame, text="Title:").grid(row=0, column=0, sticky='w', pady=5)
         self.titulo_var = tk.StringVar(value=self.anotacao_data[2] if self.anotacao_data else "")
         ttk.Entry(main_frame, textvariable=self.titulo_var, width=50).grid(row=0, column=1, sticky='ew', pady=5)
         
-        # Conteúdo
+        # Content
         ttk.Label(main_frame, text="Content:").grid(row=1, column=0, sticky='nw', pady=5)
         self.conteudo_text = tk.Text(main_frame, height=15, width=50)
         self.conteudo_text.grid(row=1, column=1, sticky='nsew', pady=5)
@@ -130,7 +138,7 @@ class AnotacaoDialog:
         if self.anotacao_data and self.anotacao_data[3]:
             self.conteudo_text.insert('1.0', self.anotacao_data[3])
         
-        # Metadados
+        # Metadata
         meta_frame = ttk.Frame(main_frame)
         meta_frame.grid(row=2, column=1, sticky='ew', pady=10)
         
@@ -138,16 +146,21 @@ class AnotacaoDialog:
         self.tags_var = tk.StringVar(value=self.anotacao_data[6] if self.anotacao_data else "")
         ttk.Entry(meta_frame, textvariable=self.tags_var, width=30).pack(side='left', padx=5)
         
-        # Botões
+        # Buttons
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=3, column=0, columnspan=2, pady=20)
         
         ttk.Button(button_frame, text="Save", command=self.salvar_anotacao).pack(side='left', padx=10)
         ttk.Button(button_frame, text="Cancel", command=self.dialog.destroy).pack(side='left', padx=10)
         
-        # Configurar weights
+        # Configure weights
         main_frame.grid_columnconfigure(1, weight=1)
         main_frame.grid_rowconfigure(1, weight=1)
+    
+    def apply_theme(self):
+        """Apply current theme to dialog"""
+        theme_manager.apply_theme_to_widget(self.dialog)
+        theme_manager.apply_theme_recursive(self.dialog)
     
     def salvar_anotacao(self):
         titulo = self.titulo_var.get().strip()
@@ -158,7 +171,7 @@ class AnotacaoDialog:
         conteudo = self.conteudo_text.get('1.0', 'end-1c').strip()
         tags = self.tags_var.get().strip()
         
-        if self.anotacao_data:  # Editar
+        if self.anotacao_data:  # Edit
             if DatabaseManager.atualizar_anotacao_geral(
                 self.anotacao_data[0], titulo, conteudo, tags
             ):
@@ -166,7 +179,7 @@ class AnotacaoDialog:
                 self.dialog.destroy()
             else:
                 messagebox.showerror("Error", "Failed to update note!")
-        else:  # Criar nova
+        else:  # Create new
             anotacao_id = DatabaseManager.criar_anotacao_geral(
                 self.user_id, titulo, conteudo, tags=tags
             )
@@ -186,9 +199,13 @@ class MainApplication:
         self.show_favorites_only = False
         self.selected_group_id = None
         
+        # Initialize theme
+        theme_manager.register_callback(self.on_theme_change)
+        
         self.configure_window()
         self.create_menu()
         self.setup_interface()
+        self.apply_theme()
 
     def configure_window(self):
         """Configure main window settings"""
@@ -218,12 +235,62 @@ class MainApplication:
         user_menu.add_command(label="Settings", command=self.show_settings)
         menubar.add_cascade(label="User", menu=user_menu)
         
+        # View menu (NEW - for theme switching)
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_command(label="Toggle Dark/Light Theme", command=self.toggle_theme)
+        view_menu.add_separator()
+        view_menu.add_radiobutton(
+            label="Light Theme", 
+            command=lambda: self.set_theme('light'),
+            variable=tk.StringVar(),
+            value='light'
+        )
+        view_menu.add_radiobutton(
+            label="Dark Theme", 
+            command=lambda: self.set_theme('dark'),
+            variable=tk.StringVar(),
+            value='dark'
+        )
+        menubar.add_cascade(label="View", menu=view_menu)
+        
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About", command=self.show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
         
         self.root.config(menu=menubar)
+
+    def toggle_theme(self):
+        """Toggle between light and dark themes"""
+        theme_manager.toggle_theme()
+
+    def set_theme(self, theme_name):
+        """Set specific theme"""
+        theme_manager.set_theme(theme_name)
+
+    def on_theme_change(self, theme_name):
+        """Callback for when theme changes"""
+        self.apply_theme()
+
+    def apply_theme(self):
+        """Apply current theme to all widgets"""
+        try:
+            # Apply TTK theme first
+            theme_manager.apply_ttk_theme(self.root)
+            
+            # Apply to root window
+            theme_manager.apply_theme_to_widget(self.root)
+            
+            # Apply to all child widgets recursively
+            theme_manager.apply_theme_recursive(self.root)
+            
+            # Special handling for PDF viewer canvas
+            if self.pdf_viewer and hasattr(self.pdf_viewer, 'canvas'):
+                theme = theme_manager.get_theme()
+                self.pdf_viewer.canvas.configure(bg=theme['canvas_bg'])
+                
+        except Exception as e:
+            print(f"Error applying theme: {e}")
 
     def setup_interface(self):
         """Set up the main interface"""
@@ -245,19 +312,18 @@ class MainApplication:
         library_tab = ttk.Frame(self.notebook)
         self.notebook.add(library_tab, text="My Library")
         
-        # NOVA ABA: Notes
+        # Notes tab
         notes_tab = ttk.Frame(self.notebook)
         self.notebook.add(notes_tab, text="My Notes")
         
         self.pdf_viewer = PDFViewer(pdf_tab)
         self.setup_library_tab(library_tab)
-        self.setup_notes_tab(notes_tab)  # NOVO MÉTODO
+        self.setup_notes_tab(notes_tab)
         self.show_home()
 
-    # ADICIONAR ESTE NOVO MÉTODO À CLASSE MainApplication:
     def setup_notes_tab(self, tab):
         """Set up the notes tab interface"""
-        # Container principal
+        # Main container
         main_container = ttk.Frame(tab)
         main_container.pack(expand=True, fill='both', padx=10, pady=10)
         
@@ -265,14 +331,14 @@ class MainApplication:
         controls_frame = ttk.Frame(main_container)
         controls_frame.pack(fill='x', pady=(0, 10))
         
-        # Botão para nova anotação
+        # New note button
         ttk.Button(
             controls_frame, 
             text="+ New Note", 
             command=self.criar_nova_anotacao
         ).pack(side='left', padx=5)
         
-        # Filtros
+        # Filters
         filter_frame = ttk.Frame(controls_frame)
         filter_frame.pack(side='right')
         
@@ -289,7 +355,7 @@ class MainApplication:
         filtro_combo.pack(side='left', padx=5)
         filtro_combo.bind('<<ComboboxSelected>>', self.filtrar_anotacoes)
         
-        # Busca
+        # Search
         search_frame = ttk.Frame(controls_frame)
         search_frame.pack(side='right', padx=20)
         
@@ -302,11 +368,11 @@ class MainApplication:
         
         ttk.Button(search_frame, text="Search", command=self.buscar_anotacoes).pack(side='left', padx=5)
         
-        # Área de listagem de anotações
+        # Notes listing area
         list_frame = ttk.Frame(main_container)
         list_frame.pack(fill='both', expand=True)
         
-        # Treeview para anotações
+        # Treeview for notes
         columns = ("ID", "Title", "File", "Group", "Date", "Favorite")
         self.anotacoes_tree = ttk.Treeview(
             list_frame,
@@ -316,7 +382,7 @@ class MainApplication:
             height=15
         )
         
-        # Configurar colunas
+        # Configure columns
         self.anotacoes_tree.column("ID", width=40, anchor='center')
         self.anotacoes_tree.column("Title", width=200, anchor='w')
         self.anotacoes_tree.column("File", width=150, anchor='w')
@@ -324,7 +390,7 @@ class MainApplication:
         self.anotacoes_tree.column("Date", width=120, anchor='center')
         self.anotacoes_tree.column("Favorite", width=60, anchor='center')
         
-        # Configurar headings
+        # Configure headings
         for col in columns:
             self.anotacoes_tree.heading(col, text=col)
         
@@ -335,7 +401,7 @@ class MainApplication:
         self.anotacoes_tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
         
-        # Botões de ação
+        # Action buttons
         action_frame = ttk.Frame(main_container)
         action_frame.pack(fill='x', pady=(10, 0))
         
@@ -344,27 +410,27 @@ class MainApplication:
         ttk.Button(action_frame, text="Toggle Favorite", command=self.toggle_favorito_anotacao).pack(side='left', padx=5)
         ttk.Button(action_frame, text="Refresh", command=self.carregar_anotacoes).pack(side='right', padx=5)
         
-        # Carregar anotações inicialmente
+        # Load notes initially
         self.carregar_anotacoes()
 
-    # ADICIONAR OS MÉTODOS DE CONTROLE DAS ANOTAÇÕES:
+    # Notes control methods
     def carregar_anotacoes(self):
-        """Carregar anotações do usuário"""
-        # Limpar treeview
+        """Load user notes"""
+        # Clear treeview
         for item in self.anotacoes_tree.get_children():
             self.anotacoes_tree.delete(item)
         
-        # Obter anotações do banco
+        # Get notes from database
         anotacoes = DatabaseManager.get_anotacoes_gerais(self.user_id)
         
         for anotacao in anotacoes:
             anotacao_id, _, titulo, _, arquivo_id, grupo_id, _, data_criacao, _, _, favorito, nome_arquivo, nome_grupo = anotacao
             
-            favorito_str = "⭐" if favorito == 1 else "☆"
+            favorito_str = "★" if favorito == 1 else "☆"
             nome_arquivo = nome_arquivo if nome_arquivo else "No file"
             nome_grupo = nome_grupo if nome_grupo else "No group"
             
-            # Formatar data
+            # Format date
             from datetime import datetime
             try:
                 data_obj = datetime.strptime(data_criacao, '%Y-%m-%d %H:%M:%S')
@@ -377,7 +443,7 @@ class MainApplication:
             ))
 
     def criar_nova_anotacao(self):
-        """Abrir diálogo para criar nova anotação"""
+        """Open dialog to create new note"""
         dialog = AnotacaoDialog(self.root, self.user_id)
         self.root.wait_window(dialog.dialog)
         
@@ -386,7 +452,7 @@ class MainApplication:
             messagebox.showinfo("Success", "Note created successfully!")
 
     def ver_editar_anotacao(self):
-        """Ver/editar anotação selecionada"""
+        """View/edit selected note"""
         selection = self.anotacoes_tree.selection()
         if not selection:
             messagebox.showwarning("Warning", "Please select a note first!")
@@ -395,7 +461,7 @@ class MainApplication:
         item = selection[0]
         anotacao_id = self.anotacoes_tree.item(item)['values'][0]
         
-        # Obter dados completos da anotação
+        # Get complete note data
         anotacoes = DatabaseManager.get_anotacoes_gerais(self.user_id)
         anotacao_data = None
         for anot in anotacoes:
@@ -412,7 +478,7 @@ class MainApplication:
                 messagebox.showinfo("Success", "Note updated successfully!")
 
     def deletar_anotacao(self):
-        """Deletar anotação selecionada"""
+        """Delete selected note"""
         selection = self.anotacoes_tree.selection()
         if not selection:
             messagebox.showwarning("Warning", "Please select a note first!")
@@ -430,7 +496,7 @@ class MainApplication:
                 messagebox.showerror("Error", "Failed to delete note!")
 
     def toggle_favorito_anotacao(self):
-        """Alternar favorito da anotação"""
+        """Toggle note favorite status"""
         selection = self.anotacoes_tree.selection()
         if not selection:
             messagebox.showwarning("Warning", "Please select a note first!")
@@ -449,18 +515,18 @@ class MainApplication:
             messagebox.showerror("Error", "Failed to update favorite status!")
 
     def filtrar_anotacoes(self, event=None):
-        """Filtrar anotações baseado no critério selecionado"""
-        # Implementação simplificada - pode ser expandida
+        """Filter notes based on selected criteria"""
+        # Simplified implementation - can be expanded
         self.carregar_anotacoes()
 
     def buscar_anotacoes(self):
-        """Buscar anotações por texto"""
+        """Search notes by text"""
         termo = self.busca_anotacoes_var.get().lower()
         if not termo:
             self.carregar_anotacoes()
             return
         
-        # Implementação de busca simples
+        # Simple search implementation
         for item in self.anotacoes_tree.get_children():
             valores = self.anotacoes_tree.item(item)['values']
             titulo = valores[1].lower()
@@ -792,7 +858,7 @@ class MainApplication:
         # Add files to treeview
         for file in files:
             file_id, filename, file_type, date, is_favorite, group_id, group_name, group_color = file
-            favorite_status = "⭐" if is_favorite else "☆"
+            favorite_status = "★" if is_favorite else "☆"
             group_display = group_name if group_name else "Ungrouped"
             tree.insert("", "end", values=(file_id, filename, file_type, date, favorite_status, group_display))
         
@@ -886,6 +952,10 @@ class MainApplication:
         
         ttk.Button(button_frame, text="Move", command=move_file).pack(side='left', padx=5)
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side='left', padx=5)
+        
+        # Apply theme to dialog
+        theme_manager.apply_theme_to_widget(dialog)
+        theme_manager.apply_theme_recursive(dialog)
 
     def refresh_file_list(self):
         """Refresh the list of files in the library"""
@@ -1116,6 +1186,12 @@ class MainApplication:
                 text=f"Groups Created: {group_count}"
             ).grid(row=5, column=0, sticky='w', pady=5)
             
+            # Show current theme
+            ttk.Label(
+                info_frame,
+                text=f"Current Theme: {theme_manager.current_theme.title()}"
+            ).grid(row=6, column=0, sticky='w', pady=5)
+            
             ttk.Button(
                 home_tab,
                 text="Back to Home",
@@ -1142,25 +1218,43 @@ class MainApplication:
             settings_frame = ttk.Frame(home_tab)
             settings_frame.pack(pady=10)
             
+            # Theme settings
+            theme_frame = ttk.LabelFrame(settings_frame, text="Theme Settings", padding=10)
+            theme_frame.grid(row=0, column=0, columnspan=2, sticky='ew', pady=10)
+            
+            ttk.Label(theme_frame, text="Current Theme:").grid(row=0, column=0, sticky='w', pady=5)
+            
+            theme_var = tk.StringVar(value=theme_manager.current_theme)
+            theme_combo = ttk.Combobox(
+                theme_frame,
+                textvariable=theme_var,
+                values=list(theme_manager.THEMES.keys()),
+                state="readonly"
+            )
+            theme_combo.grid(row=0, column=1, sticky='w', pady=5, padx=(10, 0))
+            
+            def change_theme(event=None):
+                selected_theme = theme_var.get()
+                theme_manager.set_theme(selected_theme)
+                
+            theme_combo.bind('<<ComboboxSelected>>', change_theme)
+            
+            ttk.Button(
+                theme_frame,
+                text="Toggle Theme",
+                command=self.toggle_theme
+            ).grid(row=0, column=2, padx=10)
+            
+            # Other settings placeholder
             ttk.Checkbutton(
                 settings_frame,
                 text="Email Notifications"
-            ).grid(row=0, column=0, sticky='w', pady=5)
+            ).grid(row=1, column=0, sticky='w', pady=5)
             
             ttk.Checkbutton(
                 settings_frame,
-                text="Dark Mode"
-            ).grid(row=1, column=0, sticky='w', pady=5)
-            
-            ttk.Label(
-                settings_frame,
-                text="Theme:"
+                text="Auto-save annotations"
             ).grid(row=2, column=0, sticky='w', pady=5)
-            
-            ttk.Combobox(
-                settings_frame,
-                values=["Light", "Dark", "System"]
-            ).grid(row=2, column=1, sticky='w', pady=5)
             
             ttk.Button(
                 home_tab,
@@ -1186,7 +1280,7 @@ class MainApplication:
             label.pack(pady=20)
             
             about_text = """PDF Viewer Application with Groups & Favorites
-Version 1.2.0
+Version 1.3.0
 Developed with Python and Tkinter
 
 Features:
@@ -1196,6 +1290,8 @@ Features:
 • Search functionality
 • Highlight and annotation tools
 • Color-coded group system
+• Dark/Light theme support
+• Note-taking system
 
 © 2025 All rights reserved"""
             
