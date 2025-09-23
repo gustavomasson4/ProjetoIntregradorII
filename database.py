@@ -67,6 +67,25 @@ class DatabaseManager:
                 )
             ''')
             
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS anotacoes_gerais (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usuario_id INTEGER NOT NULL,
+                titulo TEXT NOT NULL,
+                conteudo TEXT,
+                arquivo_id INTEGER,
+                grupo_id INTEGER,
+                tags TEXT,
+                data_criacao TEXT DEFAULT CURRENT_TIMESTAMP,
+                data_modificacao TEXT DEFAULT CURRENT_TIMESTAMP,
+                cor TEXT DEFAULT '#ffffff',
+                favorito INTEGER DEFAULT 0,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios (id),
+                FOREIGN KEY (arquivo_id) REFERENCES arquivos (id),
+                FOREIGN KEY (grupo_id) REFERENCES grupos (id)
+            )
+        ''')
+            
             # Adicionar colunas se elas não existirem (para compatibilidade com DBs existentes)
             try:
                 cursor.execute('ALTER TABLE arquivos ADD COLUMN favorito INTEGER DEFAULT 0')
@@ -444,3 +463,103 @@ class DatabaseManager:
         except Exception as e:
             print(f"Failed to delete highlight: {str(e)}")
             return False
+        
+    @staticmethod
+    def criar_anotacao_geral(usuario_id, titulo, conteudo, arquivo_id=None, grupo_id=None, tags=None, cor='#ffffff'):
+        """Criar uma nova anotação geral"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO anotacoes_gerais 
+                    (usuario_id, titulo, conteudo, arquivo_id, grupo_id, tags, cor)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (usuario_id, titulo, conteudo, arquivo_id, grupo_id, tags, cor))
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            print(f"Failed to create general annotation: {str(e)}")
+            return None
+
+    @staticmethod
+    def get_anotacoes_gerais(usuario_id, filtro_arquivo=None, filtro_grupo=None, apenas_favoritos=False):
+        """Obter todas as anotações gerais do usuário"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                
+                query = '''
+                    SELECT ag.*, a.nome_arquivo, g.nome_grupo 
+                    FROM anotacoes_gerais ag
+                    LEFT JOIN arquivos a ON ag.arquivo_id = a.id
+                    LEFT JOIN grupos g ON ag.grupo_id = g.id
+                    WHERE ag.usuario_id = ?
+                '''
+                params = [usuario_id]
+                
+                if filtro_arquivo:
+                    query += ' AND ag.arquivo_id = ?'
+                    params.append(filtro_arquivo)
+                
+                if filtro_grupo:
+                    query += ' AND ag.grupo_id = ?'
+                    params.append(filtro_grupo)
+                
+                if apenas_favoritos:
+                    query += ' AND ag.favorito = 1'
+                
+                query += ' ORDER BY ag.data_modificacao DESC'
+                
+                cursor.execute(query, params)
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"Failed to get general annotations: {str(e)}")
+            return []
+
+    @staticmethod
+    def atualizar_anotacao_geral(anotacao_id, titulo, conteudo, tags=None, cor=None):
+        """Atualizar uma anotação geral"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE anotacoes_gerais 
+                    SET titulo = ?, conteudo = ?, tags = ?, cor = ?, data_modificacao = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (titulo, conteudo, tags, cor, anotacao_id))
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Failed to update general annotation: {str(e)}")
+            return False
+
+    @staticmethod
+    def deletar_anotacao_geral(anotacao_id):
+        """Deletar uma anotação geral"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM anotacoes_gerais WHERE id = ?', (anotacao_id,))
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Failed to delete general annotation: {str(e)}")
+            return False
+
+    @staticmethod
+    def toggle_favorito_anotacao(anotacao_id):
+        """Alternar status de favorito de uma anotação"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT favorito FROM anotacoes_gerais WHERE id = ?', (anotacao_id,))
+                result = cursor.fetchone()
+                if result:
+                    novo_status = 1 if result[0] == 0 else 0
+                    cursor.execute('UPDATE anotacoes_gerais SET favorito = ? WHERE id = ?', (novo_status, anotacao_id))
+                    conn.commit()
+                    return novo_status
+                return None
+        except Exception as e:
+            print(f"Failed to toggle annotation favorite: {str(e)}")
+            return None

@@ -92,6 +92,90 @@ class GroupDialog:
             else:
                 messagebox.showerror("Error", "Failed to create group!")
 
+class AnotacaoDialog:
+    def __init__(self, parent, user_id, anotacao_data=None):
+        self.parent = parent
+        self.user_id = user_id
+        self.anotacao_data = anotacao_data
+        self.result = None
+        
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Edit Note" if anotacao_data else "Create New Note")
+        self.dialog.geometry("600x500")
+        self.dialog.grab_set()
+        self.dialog.transient(parent)
+        
+        # Centralizar
+        self.dialog.update_idletasks()
+        x = (self.dialog.winfo_screenwidth() - 600) // 2
+        y = (self.dialog.winfo_screenheight() - 500) // 2
+        self.dialog.geometry(f"600x500+{x}+{y}")
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        main_frame = ttk.Frame(self.dialog, padding=20)
+        main_frame.pack(fill='both', expand=True)
+        
+        # Título
+        ttk.Label(main_frame, text="Title:").grid(row=0, column=0, sticky='w', pady=5)
+        self.titulo_var = tk.StringVar(value=self.anotacao_data[2] if self.anotacao_data else "")
+        ttk.Entry(main_frame, textvariable=self.titulo_var, width=50).grid(row=0, column=1, sticky='ew', pady=5)
+        
+        # Conteúdo
+        ttk.Label(main_frame, text="Content:").grid(row=1, column=0, sticky='nw', pady=5)
+        self.conteudo_text = tk.Text(main_frame, height=15, width=50)
+        self.conteudo_text.grid(row=1, column=1, sticky='nsew', pady=5)
+        
+        if self.anotacao_data and self.anotacao_data[3]:
+            self.conteudo_text.insert('1.0', self.anotacao_data[3])
+        
+        # Metadados
+        meta_frame = ttk.Frame(main_frame)
+        meta_frame.grid(row=2, column=1, sticky='ew', pady=10)
+        
+        ttk.Label(meta_frame, text="Tags:").pack(side='left', padx=5)
+        self.tags_var = tk.StringVar(value=self.anotacao_data[6] if self.anotacao_data else "")
+        ttk.Entry(meta_frame, textvariable=self.tags_var, width=30).pack(side='left', padx=5)
+        
+        # Botões
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=3, column=0, columnspan=2, pady=20)
+        
+        ttk.Button(button_frame, text="Save", command=self.salvar_anotacao).pack(side='left', padx=10)
+        ttk.Button(button_frame, text="Cancel", command=self.dialog.destroy).pack(side='left', padx=10)
+        
+        # Configurar weights
+        main_frame.grid_columnconfigure(1, weight=1)
+        main_frame.grid_rowconfigure(1, weight=1)
+    
+    def salvar_anotacao(self):
+        titulo = self.titulo_var.get().strip()
+        if not titulo:
+            messagebox.showerror("Error", "Title is required!")
+            return
+        
+        conteudo = self.conteudo_text.get('1.0', 'end-1c').strip()
+        tags = self.tags_var.get().strip()
+        
+        if self.anotacao_data:  # Editar
+            if DatabaseManager.atualizar_anotacao_geral(
+                self.anotacao_data[0], titulo, conteudo, tags
+            ):
+                self.result = True
+                self.dialog.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to update note!")
+        else:  # Criar nova
+            anotacao_id = DatabaseManager.criar_anotacao_geral(
+                self.user_id, titulo, conteudo, tags=tags
+            )
+            if anotacao_id:
+                self.result = True
+                self.dialog.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to create note!")
+
 class MainApplication:
     def __init__(self, root, user_email):
         self.root = root
@@ -161,9 +245,230 @@ class MainApplication:
         library_tab = ttk.Frame(self.notebook)
         self.notebook.add(library_tab, text="My Library")
         
+        # NOVA ABA: Notes
+        notes_tab = ttk.Frame(self.notebook)
+        self.notebook.add(notes_tab, text="My Notes")
+        
         self.pdf_viewer = PDFViewer(pdf_tab)
         self.setup_library_tab(library_tab)
+        self.setup_notes_tab(notes_tab)  # NOVO MÉTODO
         self.show_home()
+
+    # ADICIONAR ESTE NOVO MÉTODO À CLASSE MainApplication:
+    def setup_notes_tab(self, tab):
+        """Set up the notes tab interface"""
+        # Container principal
+        main_container = ttk.Frame(tab)
+        main_container.pack(expand=True, fill='both', padx=10, pady=10)
+        
+        # Top controls
+        controls_frame = ttk.Frame(main_container)
+        controls_frame.pack(fill='x', pady=(0, 10))
+        
+        # Botão para nova anotação
+        ttk.Button(
+            controls_frame, 
+            text="+ New Note", 
+            command=self.criar_nova_anotacao
+        ).pack(side='left', padx=5)
+        
+        # Filtros
+        filter_frame = ttk.Frame(controls_frame)
+        filter_frame.pack(side='right')
+        
+        ttk.Label(filter_frame, text="Filter:").pack(side='left', padx=5)
+        
+        self.filtro_anotacoes_var = tk.StringVar(value="All")
+        filtro_combo = ttk.Combobox(
+            filter_frame, 
+            textvariable=self.filtro_anotacoes_var,
+            values=["All", "Favorites", "By File", "By Group"],
+            state="readonly",
+            width=12
+        )
+        filtro_combo.pack(side='left', padx=5)
+        filtro_combo.bind('<<ComboboxSelected>>', self.filtrar_anotacoes)
+        
+        # Busca
+        search_frame = ttk.Frame(controls_frame)
+        search_frame.pack(side='right', padx=20)
+        
+        ttk.Label(search_frame, text="Search:").pack(side='left', padx=5)
+        
+        self.busca_anotacoes_var = tk.StringVar()
+        busca_entry = ttk.Entry(search_frame, textvariable=self.busca_anotacoes_var, width=20)
+        busca_entry.pack(side='left', padx=5)
+        busca_entry.bind('<Return>', lambda e: self.buscar_anotacoes())
+        
+        ttk.Button(search_frame, text="Search", command=self.buscar_anotacoes).pack(side='left', padx=5)
+        
+        # Área de listagem de anotações
+        list_frame = ttk.Frame(main_container)
+        list_frame.pack(fill='both', expand=True)
+        
+        # Treeview para anotações
+        columns = ("ID", "Title", "File", "Group", "Date", "Favorite")
+        self.anotacoes_tree = ttk.Treeview(
+            list_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=15
+        )
+        
+        # Configurar colunas
+        self.anotacoes_tree.column("ID", width=40, anchor='center')
+        self.anotacoes_tree.column("Title", width=200, anchor='w')
+        self.anotacoes_tree.column("File", width=150, anchor='w')
+        self.anotacoes_tree.column("Group", width=100, anchor='w')
+        self.anotacoes_tree.column("Date", width=120, anchor='center')
+        self.anotacoes_tree.column("Favorite", width=60, anchor='center')
+        
+        # Configurar headings
+        for col in columns:
+            self.anotacoes_tree.heading(col, text=col)
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.anotacoes_tree.yview)
+        self.anotacoes_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.anotacoes_tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Botões de ação
+        action_frame = ttk.Frame(main_container)
+        action_frame.pack(fill='x', pady=(10, 0))
+        
+        ttk.Button(action_frame, text="View/Edit", command=self.ver_editar_anotacao).pack(side='left', padx=5)
+        ttk.Button(action_frame, text="Delete", command=self.deletar_anotacao).pack(side='left', padx=5)
+        ttk.Button(action_frame, text="Toggle Favorite", command=self.toggle_favorito_anotacao).pack(side='left', padx=5)
+        ttk.Button(action_frame, text="Refresh", command=self.carregar_anotacoes).pack(side='right', padx=5)
+        
+        # Carregar anotações inicialmente
+        self.carregar_anotacoes()
+
+    # ADICIONAR OS MÉTODOS DE CONTROLE DAS ANOTAÇÕES:
+    def carregar_anotacoes(self):
+        """Carregar anotações do usuário"""
+        # Limpar treeview
+        for item in self.anotacoes_tree.get_children():
+            self.anotacoes_tree.delete(item)
+        
+        # Obter anotações do banco
+        anotacoes = DatabaseManager.get_anotacoes_gerais(self.user_id)
+        
+        for anotacao in anotacoes:
+            anotacao_id, _, titulo, _, arquivo_id, grupo_id, _, data_criacao, _, _, favorito, nome_arquivo, nome_grupo = anotacao
+            
+            favorito_str = "⭐" if favorito == 1 else "☆"
+            nome_arquivo = nome_arquivo if nome_arquivo else "No file"
+            nome_grupo = nome_grupo if nome_grupo else "No group"
+            
+            # Formatar data
+            from datetime import datetime
+            try:
+                data_obj = datetime.strptime(data_criacao, '%Y-%m-%d %H:%M:%S')
+                data_formatada = data_obj.strftime('%d/%m/%Y')
+            except:
+                data_formatada = data_criacao
+            
+            self.anotacoes_tree.insert("", "end", values=(
+                anotacao_id, titulo, nome_arquivo, nome_grupo, data_formatada, favorito_str
+            ))
+
+    def criar_nova_anotacao(self):
+        """Abrir diálogo para criar nova anotação"""
+        dialog = AnotacaoDialog(self.root, self.user_id)
+        self.root.wait_window(dialog.dialog)
+        
+        if dialog.result:
+            self.carregar_anotacoes()
+            messagebox.showinfo("Success", "Note created successfully!")
+
+    def ver_editar_anotacao(self):
+        """Ver/editar anotação selecionada"""
+        selection = self.anotacoes_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a note first!")
+            return
+        
+        item = selection[0]
+        anotacao_id = self.anotacoes_tree.item(item)['values'][0]
+        
+        # Obter dados completos da anotação
+        anotacoes = DatabaseManager.get_anotacoes_gerais(self.user_id)
+        anotacao_data = None
+        for anot in anotacoes:
+            if anot[0] == anotacao_id:
+                anotacao_data = anot
+                break
+        
+        if anotacao_data:
+            dialog = AnotacaoDialog(self.root, self.user_id, anotacao_data)
+            self.root.wait_window(dialog.dialog)
+            
+            if dialog.result:
+                self.carregar_anotacoes()
+                messagebox.showinfo("Success", "Note updated successfully!")
+
+    def deletar_anotacao(self):
+        """Deletar anotação selecionada"""
+        selection = self.anotacoes_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a note first!")
+            return
+        
+        item = selection[0]
+        anotacao_id = self.anotacoes_tree.item(item)['values'][0]
+        titulo = self.anotacoes_tree.item(item)['values'][1]
+        
+        if messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete the note '{titulo}'?"):
+            if DatabaseManager.deletar_anotacao_geral(anotacao_id):
+                self.carregar_anotacoes()
+                messagebox.showinfo("Success", "Note deleted successfully!")
+            else:
+                messagebox.showerror("Error", "Failed to delete note!")
+
+    def toggle_favorito_anotacao(self):
+        """Alternar favorito da anotação"""
+        selection = self.anotacoes_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a note first!")
+            return
+        
+        item = selection[0]
+        anotacao_id = self.anotacoes_tree.item(item)['values'][0]
+        titulo = self.anotacoes_tree.item(item)['values'][1]
+        
+        novo_status = DatabaseManager.toggle_favorito_anotacao(anotacao_id)
+        if novo_status is not None:
+            status_text = "added to" if novo_status == 1 else "removed from"
+            messagebox.showinfo("Success", f"Note '{titulo}' has been {status_text} favorites!")
+            self.carregar_anotacoes()
+        else:
+            messagebox.showerror("Error", "Failed to update favorite status!")
+
+    def filtrar_anotacoes(self, event=None):
+        """Filtrar anotações baseado no critério selecionado"""
+        # Implementação simplificada - pode ser expandida
+        self.carregar_anotacoes()
+
+    def buscar_anotacoes(self):
+        """Buscar anotações por texto"""
+        termo = self.busca_anotacoes_var.get().lower()
+        if not termo:
+            self.carregar_anotacoes()
+            return
+        
+        # Implementação de busca simples
+        for item in self.anotacoes_tree.get_children():
+            valores = self.anotacoes_tree.item(item)['values']
+            titulo = valores[1].lower()
+            
+            if termo in titulo:
+                self.anotacoes_tree.selection_set(item)
+                self.anotacoes_tree.focus(item)
+                break
 
     def setup_library_tab(self, tab):
         """Set up the library tab interface"""
