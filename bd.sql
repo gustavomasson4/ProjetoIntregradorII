@@ -40,4 +40,3 @@ CREATE TABLE Documento (
     FOREIGN KEY (ID_Diretorio) REFERENCES Diretorio(ID_Diretorio) ON DELETE CASCADE
 );
 
-

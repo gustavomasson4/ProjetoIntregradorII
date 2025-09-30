@@ -7,6 +7,12 @@ from pdf_viewer import PDFViewer
 from theme_manager import theme_manager
 import fitz
 
+# ===== NOVO: Importações para download de livros =====
+import requests
+import json
+from urllib.parse import quote
+# ===== FIM DAS NOVAS IMPORTAÇÕES =====
+
 class GroupDialog:
     def __init__(self, parent, user_id, group_data=None):
         self.parent = parent
@@ -98,6 +104,210 @@ class GroupDialog:
                 self.dialog.destroy()
             else:
                 messagebox.showerror("Error", "Failed to create group!")
+
+# ===== NOVO: Dialog para download de livros =====
+class BookDownloadDialog:
+    def __init__(self, parent, user_id):
+        self.parent = parent
+        self.user_id = user_id
+        self.result = None
+        self.search_results = []
+        
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Download Books from Project Gutenberg")
+        self.dialog.grab_set()
+        self.dialog.transient(parent)
+        
+        # Set size
+        self.dialog.geometry("800x600")
+        self.dialog.update_idletasks()
+        x = (self.dialog.winfo_screenwidth() - 800) // 2
+        y = (self.dialog.winfo_screenheight() - 600) // 2
+        self.dialog.geometry(f"800x600+{x}+{y}")
+        
+        self.setup_ui()
+        self.apply_theme()
+    
+    def setup_ui(self):
+        main_frame = ttk.Frame(self.dialog, padding=20)
+        main_frame.pack(fill='both', expand=True)
+        
+        # Search frame
+        search_frame = ttk.Frame(main_frame)
+        search_frame.pack(fill='x', pady=(0, 10))
+        
+        ttk.Label(search_frame, text="Search Book:").pack(side='left', padx=5)
+        
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=40)
+        search_entry.pack(side='left', padx=5)
+        search_entry.bind('<Return>', lambda e: self.search_books())
+        
+        ttk.Button(search_frame, text="Search", command=self.search_books).pack(side='left', padx=5)
+        
+        # Results frame
+        results_frame = ttk.LabelFrame(main_frame, text="Search Results", padding=10)
+        results_frame.pack(fill='both', expand=True, pady=10)
+        
+        # Treeview for results
+        columns = ("Title", "Author", "Language", "ID")
+        self.results_tree = ttk.Treeview(
+            results_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse"
+        )
+        
+        self.results_tree.column("Title", width=300)
+        self.results_tree.column("Author", width=200)
+        self.results_tree.column("Language", width=80)
+        self.results_tree.column("ID", width=80)
+        
+        for col in columns:
+            self.results_tree.heading(col, text=col)
+        
+        scrollbar = ttk.Scrollbar(results_frame, orient="vertical", command=self.results_tree.yview)
+        self.results_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.results_tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Buttons frame
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill='x', pady=10)
+        
+        ttk.Button(button_frame, text="Download Selected (TXT)", command=lambda: self.download_selected('txt')).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Download Selected (EPUB)", command=lambda: self.download_selected('epub')).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Close", command=self.dialog.destroy).pack(side='right', padx=5)
+        
+        # Status label
+        self.status_label = ttk.Label(main_frame, text="Enter a search term and click Search")
+        self.status_label.pack(pady=5)
+    
+    def apply_theme(self):
+        theme_manager.apply_theme_to_widget(self.dialog)
+        theme_manager.apply_theme_recursive(self.dialog)
+    
+    def search_books(self):
+        search_term = self.search_var.get().strip()
+        if not search_term:
+            messagebox.showwarning("Warning", "Please enter a search term!")
+            return
+        
+        self.status_label.config(text="Searching...")
+        self.dialog.update()
+        
+        try:
+            # Project Gutenberg API
+            url = f"https://gutendex.com/books/?search={quote(search_term)}"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get('results', [])
+                
+                # Clear previous results
+                for item in self.results_tree.get_children():
+                    self.results_tree.delete(item)
+                
+                self.search_results = []
+                
+                if results:
+                    for book in results[:50]:  # Limit to 50 results
+                        title = book.get('title', 'Unknown')
+                        authors = ', '.join([a.get('name', 'Unknown') for a in book.get('authors', [])])
+                        languages = ', '.join(book.get('languages', []))
+                        book_id = book.get('id', '')
+                        
+                        self.results_tree.insert("", "end", values=(title, authors, languages, book_id))
+                        self.search_results.append(book)
+                    
+                    self.status_label.config(text=f"Found {len(results)} books")
+                else:
+                    self.status_label.config(text="No books found")
+            else:
+                self.status_label.config(text="Search failed")
+                messagebox.showerror("Error", "Failed to search books. Please try again.")
+        
+        except requests.exceptions.RequestException as e:
+            self.status_label.config(text="Network error")
+            messagebox.showerror("Error", f"Network error: {str(e)}")
+        except Exception as e:
+            self.status_label.config(text="Error occurred")
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+    
+    def download_selected(self, format_type):
+        selection = self.results_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a book to download!")
+            return
+        
+        item_values = self.results_tree.item(selection[0])['values']
+        book_id = item_values[3]
+        title = item_values[0]
+        
+        # Find the book in search results
+        book = None
+        for b in self.search_results:
+            if b.get('id') == book_id:
+                book = b
+                break
+        
+        if not book:
+            messagebox.showerror("Error", "Book information not found!")
+            return
+        
+        self.status_label.config(text=f"Downloading {title}...")
+        self.dialog.update()
+        
+        try:
+            # Get download URL from formats
+            formats = book.get('formats', {})
+            download_url = None
+            
+            if format_type == 'txt':
+                download_url = formats.get('text/plain; charset=utf-8') or formats.get('text/plain')
+            elif format_type == 'epub':
+                download_url = formats.get('application/epub+zip')
+            
+            if not download_url:
+                messagebox.showerror("Error", f"Format {format_type.upper()} not available for this book!")
+                self.status_label.config(text="Download failed")
+                return
+            
+            # Download the file
+            response = requests.get(download_url, timeout=30)
+            
+            if response.status_code == 200:
+                # Create directory for downloads
+                user_dir = os.path.join("user_files", str(self.user_id), "downloads")
+                os.makedirs(user_dir, exist_ok=True)
+                
+                # Clean filename
+                safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
+                filename = f"{safe_title}.{format_type}"
+                filepath = os.path.join(user_dir, filename)
+                
+                # Save file
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+                
+                # Save to database
+                if DatabaseManager.save_file(self.user_id, filename, filepath, f'.{format_type}'):
+                    self.status_label.config(text="Download complete!")
+                    messagebox.showinfo("Success", f"Book '{title}' downloaded successfully!\n\nSaved to: {filepath}")
+                    self.result = True
+                else:
+                    os.remove(filepath)
+                    messagebox.showerror("Error", "Failed to save book to database!")
+            else:
+                messagebox.showerror("Error", "Failed to download book!")
+                self.status_label.config(text="Download failed")
+        
+        except Exception as e:
+            messagebox.showerror("Error", f"Download error: {str(e)}")
+            self.status_label.config(text="Download failed")
+# ===== FIM DO NOVO DIALOG =====
 
 class AnotacaoDialog:
     def __init__(self, parent, user_id, anotacao_data=None):
@@ -226,6 +436,10 @@ class MainApplication:
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Home", command=self.show_home)
         file_menu.add_separator()
+        # ===== NOVO: Adicionado menu de download =====
+        file_menu.add_command(label="Download Books", command=self.show_book_download)
+        file_menu.add_separator()
+        # ===== FIM DA NOVA OPÇÃO =====
         file_menu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=file_menu)
         
@@ -259,6 +473,19 @@ class MainApplication:
         menubar.add_cascade(label="Help", menu=help_menu)
         
         self.root.config(menu=menubar)
+
+    # ===== NOVO: Método para abrir dialog de download =====
+    def show_book_download(self):
+        """Show book download dialog"""
+        dialog = BookDownloadDialog(self.root, self.user_id)
+        self.root.wait_window(dialog.dialog)
+        
+        if dialog.result:
+            # Refresh file list after download
+            if hasattr(self, 'refresh_file_list'):
+                self.refresh_file_list()
+                self.refresh_groups_list()
+    # ===== FIM DO NOVO MÉTODO =====
 
     def toggle_theme(self):
         """Toggle between light and dark themes"""
@@ -630,7 +857,7 @@ class MainApplication:
         self.groups_listbox.delete(0, tk.END)
         
         # Add "All Files" option
-        self.groups_listbox.insert(tk.END, "📁 All Files")
+        self.groups_listbox.insert(tk.END, "📚 All Files")
         self.groups_listbox.insert(tk.END, "📂 Ungrouped Files")
         
         groups = DatabaseManager.get_user_groups(self.user_id)
@@ -789,6 +1016,7 @@ class MainApplication:
         filetypes = [
             ("PDF Files", "*.pdf"),
             ("Text Files", "*.txt"),
+            ("EPUB Files", "*.epub"),
             ("Image Files", "*.png *.jpg *.jpeg"),
             ("All Files", "*.*")
         ]
@@ -1185,124 +1413,3 @@ class MainApplication:
                 info_frame,
                 text=f"Groups Created: {group_count}"
             ).grid(row=5, column=0, sticky='w', pady=5)
-            
-            # Show current theme
-            ttk.Label(
-                info_frame,
-                text=f"Current Theme: {theme_manager.current_theme.title()}"
-            ).grid(row=6, column=0, sticky='w', pady=5)
-            
-            ttk.Button(
-                home_tab,
-                text="Back to Home",
-                command=self.show_home
-            ).pack(pady=20)
-
-    def show_settings(self):
-        """Show application settings"""
-        if self.notebook:
-            self.notebook.select(0)
-            home_tab = self.notebook.winfo_children()[0]
-            
-            # Clear existing widgets
-            for child in home_tab.winfo_children():
-                child.destroy()
-            
-            label = ttk.Label(
-                home_tab,
-                text="Application Settings",
-                font=('Arial', 16)
-            )
-            label.pack(pady=20)
-            
-            settings_frame = ttk.Frame(home_tab)
-            settings_frame.pack(pady=10)
-            
-            # Theme settings
-            theme_frame = ttk.LabelFrame(settings_frame, text="Theme Settings", padding=10)
-            theme_frame.grid(row=0, column=0, columnspan=2, sticky='ew', pady=10)
-            
-            ttk.Label(theme_frame, text="Current Theme:").grid(row=0, column=0, sticky='w', pady=5)
-            
-            theme_var = tk.StringVar(value=theme_manager.current_theme)
-            theme_combo = ttk.Combobox(
-                theme_frame,
-                textvariable=theme_var,
-                values=list(theme_manager.THEMES.keys()),
-                state="readonly"
-            )
-            theme_combo.grid(row=0, column=1, sticky='w', pady=5, padx=(10, 0))
-            
-            def change_theme(event=None):
-                selected_theme = theme_var.get()
-                theme_manager.set_theme(selected_theme)
-                
-            theme_combo.bind('<<ComboboxSelected>>', change_theme)
-            
-            ttk.Button(
-                theme_frame,
-                text="Toggle Theme",
-                command=self.toggle_theme
-            ).grid(row=0, column=2, padx=10)
-            
-            # Other settings placeholder
-            ttk.Checkbutton(
-                settings_frame,
-                text="Email Notifications"
-            ).grid(row=1, column=0, sticky='w', pady=5)
-            
-            ttk.Checkbutton(
-                settings_frame,
-                text="Auto-save annotations"
-            ).grid(row=2, column=0, sticky='w', pady=5)
-            
-            ttk.Button(
-                home_tab,
-                text="Back to Home",
-                command=self.show_home
-            ).pack(pady=20)
-
-    def show_about(self):
-        """Show about information"""
-        if self.notebook:
-            self.notebook.select(0)
-            home_tab = self.notebook.winfo_children()[0]
-            
-            # Clear existing widgets
-            for child in home_tab.winfo_children():
-                child.destroy()
-            
-            label = ttk.Label(
-                home_tab,
-                text="About This Application",
-                font=('Arial', 16)
-            )
-            label.pack(pady=20)
-            
-            about_text = """PDF Viewer Application with Groups & Favorites
-Version 1.3.0
-Developed with Python and Tkinter
-
-Features:
-• PDF viewing and annotation
-• File organization with groups
-• File management with favorites
-• Search functionality
-• Highlight and annotation tools
-• Color-coded group system
-• Dark/Light theme support
-• Note-taking system
-
-© 2025 All rights reserved"""
-            
-            ttk.Label(
-                home_tab,
-                text=about_text,
-                justify='left'
-            ).pack(pady=10)
-            
-            ttk.Button(
-                home_tab,
-                text="Back to Home",
-                command=self.show_home
-            ).pack(pady=20)

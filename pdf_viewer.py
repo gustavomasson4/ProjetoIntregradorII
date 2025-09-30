@@ -607,4 +607,3 @@ class PDFViewer:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save annotation: {str(e)}")
             self.reset_annotation_state()
-
