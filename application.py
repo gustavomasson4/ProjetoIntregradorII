@@ -7,11 +7,9 @@ from pdf_viewer import PDFViewer
 from theme_manager import theme_manager
 import fitz
 
-# ===== NOVO: Importações para download de livros =====
+# Book download imports
 import requests
-import json
 from urllib.parse import quote
-# ===== FIM DAS NOVAS IMPORTAÇÕES =====
 
 class GroupDialog:
     def __init__(self, parent, user_id, group_data=None):
@@ -105,7 +103,6 @@ class GroupDialog:
             else:
                 messagebox.showerror("Error", "Failed to create group!")
 
-# ===== NOVO: Dialog para download de livros =====
 class BookDownloadDialog:
     def __init__(self, parent, user_id):
         self.parent = parent
@@ -285,6 +282,7 @@ class BookDownloadDialog:
                 
                 # Clean filename
                 safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
+                safe_title = safe_title[:100]  # Limit filename length
                 filename = f"{safe_title}.{format_type}"
                 filepath = os.path.join(user_dir, filename)
                 
@@ -295,7 +293,7 @@ class BookDownloadDialog:
                 # Save to database
                 if DatabaseManager.save_file(self.user_id, filename, filepath, f'.{format_type}'):
                     self.status_label.config(text="Download complete!")
-                    messagebox.showinfo("Success", f"Book '{title}' downloaded successfully!\n\nSaved to: {filepath}")
+                    messagebox.showinfo("Success", f"Book '{title}' downloaded successfully!")
                     self.result = True
                 else:
                     os.remove(filepath)
@@ -307,7 +305,6 @@ class BookDownloadDialog:
         except Exception as e:
             messagebox.showerror("Error", f"Download error: {str(e)}")
             self.status_label.config(text="Download failed")
-# ===== FIM DO NOVO DIALOG =====
 
 class AnotacaoDialog:
     def __init__(self, parent, user_id, anotacao_data=None):
@@ -436,10 +433,8 @@ class MainApplication:
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Home", command=self.show_home)
         file_menu.add_separator()
-        # ===== NOVO: Adicionado menu de download =====
         file_menu.add_command(label="Download Books", command=self.show_book_download)
         file_menu.add_separator()
-        # ===== FIM DA NOVA OPÇÃO =====
         file_menu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=file_menu)
         
@@ -449,7 +444,7 @@ class MainApplication:
         user_menu.add_command(label="Settings", command=self.show_settings)
         menubar.add_cascade(label="User", menu=user_menu)
         
-        # View menu (NEW - for theme switching)
+        # View menu
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(label="Toggle Dark/Light Theme", command=self.toggle_theme)
         view_menu.add_separator()
@@ -474,7 +469,6 @@ class MainApplication:
         
         self.root.config(menu=menubar)
 
-    # ===== NOVO: Método para abrir dialog de download =====
     def show_book_download(self):
         """Show book download dialog"""
         dialog = BookDownloadDialog(self.root, self.user_id)
@@ -482,10 +476,8 @@ class MainApplication:
         
         if dialog.result:
             # Refresh file list after download
-            if hasattr(self, 'refresh_file_list'):
-                self.refresh_file_list()
-                self.refresh_groups_list()
-    # ===== FIM DO NOVO MÉTODO =====
+            self.refresh_file_list()
+            self.refresh_groups_list()
 
     def toggle_theme(self):
         """Toggle between light and dark themes"""
@@ -743,7 +735,6 @@ class MainApplication:
 
     def filtrar_anotacoes(self, event=None):
         """Filter notes based on selected criteria"""
-        # Simplified implementation - can be expanded
         self.carregar_anotacoes()
 
     def buscar_anotacoes(self):
@@ -857,7 +848,7 @@ class MainApplication:
         self.groups_listbox.delete(0, tk.END)
         
         # Add "All Files" option
-        self.groups_listbox.insert(tk.END, "📚 All Files")
+        self.groups_listbox.insert(tk.END, "📁 All Files")
         self.groups_listbox.insert(tk.END, "📂 Ungrouped Files")
         
         groups = DatabaseManager.get_user_groups(self.user_id)
@@ -870,7 +861,7 @@ class MainApplication:
         # Update upload group combo
         group_options = ["No Group"]
         for group in groups:
-            group_options.append(group[1])  # group name
+            group_options.append(group[1])
         
         self.upload_group_combo['values'] = group_options
         if group_options:
@@ -883,11 +874,11 @@ class MainApplication:
             return
             
         index = selection[0]
-        if index == 0:  # All Files
+        if index == 0:
             self.selected_group_id = None
-        elif index == 1:  # Ungrouped Files
+        elif index == 1:
             self.selected_group_id = -1
-        else:  # Specific group
+        else:
             groups = DatabaseManager.get_user_groups(self.user_id)
             if index - 2 < len(groups):
                 self.selected_group_id = groups[index - 2][0]
@@ -906,7 +897,7 @@ class MainApplication:
     def edit_selected_group(self, event=None):
         """Edit the selected group"""
         selection = self.groups_listbox.curselection()
-        if not selection or selection[0] < 2:  # Can't edit "All Files" or "Ungrouped"
+        if not selection or selection[0] < 2:
             return
             
         index = selection[0]
@@ -974,7 +965,6 @@ class MainApplication:
             self.refresh_file_list()
             return
         
-        # Get all files from database
         all_files = DatabaseManager.get_user_files(
             self.user_id, 
             favorites_only=self.show_favorites_only, 
@@ -984,14 +974,11 @@ class MainApplication:
         if not all_files:
             return
         
-        # Filter files based on search term
         filtered_files = [
             file for file in all_files 
-            if (search_term in file[1].lower() or  # filename
-                search_term in file[2].lower())    # file type
+            if (search_term in file[1].lower() or search_term in file[2].lower())
         ]
         
-        # Clear current list
         for widget in self.file_list_frame.winfo_children():
             widget.destroy()
         
@@ -1003,7 +990,6 @@ class MainApplication:
             ).pack(expand=True, pady=50)
             return
         
-        # Create a treeview to display filtered files
         self.create_file_treeview(filtered_files)
 
     def clear_search(self):
@@ -1030,7 +1016,6 @@ class MainApplication:
             filename = os.path.basename(filepath)
             file_type = os.path.splitext(filename)[1].lower()
             
-            # Get selected group for upload
             selected_group_name = self.upload_group_var.get()
             group_id = None
             
@@ -1041,22 +1026,19 @@ class MainApplication:
                         group_id = group[0]
                         break
             
-            # Create a directory for user files if it doesn't exist
             user_dir = os.path.join("user_files", str(self.user_id))
             os.makedirs(user_dir, exist_ok=True)
             
-            # Copy file to user directory
             dest_path = os.path.join(user_dir, filename)
             try:
                 shutil.copy2(filepath, dest_path)
                 
-                # Save to database
                 if DatabaseManager.save_file(self.user_id, filename, dest_path, file_type, group_id):
                     messagebox.showinfo("Success", f"File '{filename}' uploaded successfully!")
                     self.refresh_groups_list()
                     self.refresh_file_list()
                 else:
-                    os.remove(dest_path)  # Remove the file if database save failed
+                    os.remove(dest_path)
                     
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to upload file: {str(e)}")
@@ -1071,7 +1053,6 @@ class MainApplication:
             selectmode="browse"
         )
         
-        # Configure columns
         tree.column("ID", width=50, anchor='center')
         tree.column("Filename", width=250, anchor='w')
         tree.column("Type", width=80, anchor='center')
@@ -1079,11 +1060,9 @@ class MainApplication:
         tree.column("Favorite", width=70, anchor='center')
         tree.column("Group", width=120, anchor='w')
         
-        # Add headings
         for col in columns:
             tree.heading(col, text=col)
         
-        # Add files to treeview
         for file in files:
             file_id, filename, file_type, date, is_favorite, group_id, group_name, group_color = file
             favorite_status = "★" if is_favorite else "☆"
@@ -1092,33 +1071,13 @@ class MainApplication:
         
         tree.pack(expand=True, fill='both', padx=10, pady=10)
         
-        # Add buttons for file actions
         button_frame = ttk.Frame(self.file_list_frame)
         button_frame.pack(pady=10)
         
-        ttk.Button(
-            button_frame,
-            text="Open File",
-            command=lambda: self.open_selected_file(tree)
-        ).pack(side='left', padx=5)
-        
-        ttk.Button(
-            button_frame,
-            text="Toggle Favorite",
-            command=lambda: self.toggle_file_favorite(tree)
-        ).pack(side='left', padx=5)
-        
-        ttk.Button(
-            button_frame,
-            text="Move to Group",
-            command=lambda: self.move_file_to_group(tree)
-        ).pack(side='left', padx=5)
-        
-        ttk.Button(
-            button_frame,
-            text="Delete File",
-            command=lambda: self.delete_selected_file(tree)
-        ).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Open File", command=lambda: self.open_selected_file(tree)).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Toggle Favorite", command=lambda: self.toggle_file_favorite(tree)).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Move to Group", command=lambda: self.move_file_to_group(tree)).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Delete File", command=lambda: self.delete_selected_file(tree)).pack(side='left', padx=5)
 
     def move_file_to_group(self, tree):
         """Move selected file to a different group"""
@@ -1131,7 +1090,6 @@ class MainApplication:
         file_id = file_info[0]
         filename = file_info[1]
         
-        # Create group selection dialog
         groups = DatabaseManager.get_user_groups(self.user_id)
         group_options = ["Ungrouped"]
         group_ids = [None]
@@ -1140,13 +1098,11 @@ class MainApplication:
             group_options.append(group[1])
             group_ids.append(group[0])
         
-        # Simple dialog for group selection
         dialog = tk.Toplevel(self.root)
         dialog.title("Move File to Group")
         dialog.grab_set()
         dialog.geometry("300x150")
         
-        # Center dialog
         x = (dialog.winfo_screenwidth() - 300) // 2
         y = (dialog.winfo_screenheight() - 150) // 2
         dialog.geometry(f"300x150+{x}+{y}")
@@ -1181,7 +1137,6 @@ class MainApplication:
         ttk.Button(button_frame, text="Move", command=move_file).pack(side='left', padx=5)
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side='left', padx=5)
         
-        # Apply theme to dialog
         theme_manager.apply_theme_to_widget(dialog)
         theme_manager.apply_theme_recursive(dialog)
 
@@ -1193,11 +1148,9 @@ class MainApplication:
             self.search_files()
             return
         
-        # Clear current list
         for widget in self.file_list_frame.winfo_children():
             widget.destroy()
         
-        # Get files from database
         files = DatabaseManager.get_user_files(
             self.user_id, 
             favorites_only=self.show_favorites_only, 
@@ -1223,7 +1176,6 @@ class MainApplication:
             ).pack(expand=True, pady=50)
             return
         
-        # Create treeview to display files
         self.create_file_treeview(files)
 
     def toggle_file_favorite(self, tree):
@@ -1237,15 +1189,11 @@ class MainApplication:
         file_id = file_info[0]
         filename = file_info[1]
         
-        # Toggle favorite status in database
         new_status = DatabaseManager.toggle_favorite(file_id)
         
         if new_status is not None:
             status_text = "added to" if new_status == 1 else "removed from"
-            messagebox.showinfo(
-                "Success", 
-                f"File '{filename}' has been {status_text} favorites!"
-            )
+            messagebox.showinfo("Success", f"File '{filename}' has been {status_text} favorites!")
             self.refresh_file_list()
         else:
             messagebox.showerror("Error", "Failed to update favorite status!")
@@ -1267,15 +1215,13 @@ class MainApplication:
         
         try:
             if file_path.lower().endswith('.pdf'):
-                # Open in PDF viewer tab
-                self.notebook.select(1)  # Switch to PDF viewer tab
+                self.notebook.select(1)
                 self.pdf_viewer.pdf_doc = fitz.open(file_path)
-                self.pdf_viewer.file_id = file_id  # Set the file ID for annotations
+                self.pdf_viewer.file_id = file_id
                 self.pdf_viewer.current_page = 0
                 self.pdf_viewer.render_page()
                 self.pdf_viewer.update_controls()
             else:
-                # Open with default application
                 os.startfile(file_path)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open file: {str(e)}")
@@ -1296,16 +1242,11 @@ class MainApplication:
             messagebox.showerror("Error", "File not found!")
             return
         
-        if messagebox.askyesno(
-            "Confirm Delete",
-            f"Are you sure you want to delete '{filename}'?\n\nThis will also delete all annotations and highlights.\nThis action cannot be undone."
-        ):
+        if messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete '{filename}'?\n\nThis will also delete all annotations and highlights.\nThis action cannot be undone."):
             try:
-                # Delete from filesystem
                 if os.path.exists(file_path):
                     os.remove(file_path)
                 
-                # Delete from database (this will also delete related annotations and highlights)
                 if DatabaseManager.delete_file(file_id):
                     messagebox.showinfo("Success", "File deleted successfully!")
                     self.refresh_groups_list()
@@ -1320,11 +1261,9 @@ class MainApplication:
         if self.notebook:
             self.notebook.select(0)
             
-            # Clear existing widgets
             for child in self.notebook.winfo_children()[0].winfo_children():
                 child.destroy()
             
-            # Create home screen content
             label = ttk.Label(
                 self.notebook.winfo_children()[0],
                 text=f"Welcome, {self.user_email}!\nThis is the home screen.", 
@@ -1336,29 +1275,10 @@ class MainApplication:
             button_frame = ttk.Frame(self.notebook.winfo_children()[0])
             button_frame.pack(pady=20)
             
-            ttk.Button(
-                button_frame,
-                text="Open Profile",
-                command=self.show_profile
-            ).pack(side='left', padx=10)
-            
-            ttk.Button(
-                button_frame,
-                text="Open Settings",
-                command=self.show_settings
-            ).pack(side='left', padx=10)
-            
-            ttk.Button(
-                button_frame,
-                text="Open PDF Viewer",
-                command=lambda: self.notebook.select(1)
-            ).pack(side='left', padx=10)
-            
-            ttk.Button(
-                button_frame,
-                text="Open My Library",
-                command=lambda: self.notebook.select(2)
-            ).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="Open Profile", command=self.show_profile).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="Open Settings", command=self.show_settings).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="Open PDF Viewer", command=lambda: self.notebook.select(1)).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="Open My Library", command=lambda: self.notebook.select(2)).pack(side='left', padx=10)
 
     def show_profile(self):
         """Show user profile"""
@@ -1366,50 +1286,182 @@ class MainApplication:
             self.notebook.select(0)
             home_tab = self.notebook.winfo_children()[0]
             
-            # Clear existing widgets
             for child in home_tab.winfo_children():
                 child.destroy()
             
-            label = ttk.Label(
-                home_tab,
-                text="User Profile",
-                font=('Arial', 16)
-            )
+            label = ttk.Label(home_tab, text="User Profile", font=('Arial', 16))
             label.pack(pady=20)
             
             info_frame = ttk.Frame(home_tab)
             info_frame.pack(pady=10)
             
-            ttk.Label(
-                info_frame,
-                text=f"Email: {self.user_email}"
-            ).grid(row=0, column=0, sticky='w', pady=5)
+            ttk.Label(info_frame, text=f"Email: {self.user_email}").grid(row=0, column=0, sticky='w', pady=5)
+            ttk.Label(info_frame, text="Registration Date: 01/01/2023").grid(row=1, column=0, sticky='w', pady=5)
+            ttk.Label(info_frame, text="Last Login: Today").grid(row=2, column=0, sticky='w', pady=5)
             
-            ttk.Label(
-                info_frame,
-                text="Registration Date: 01/01/2023"
-            ).grid(row=1, column=0, sticky='w', pady=5)
-            
-            ttk.Label(
-                info_frame,
-                text="Last Login: Today"
-            ).grid(row=2, column=0, sticky='w', pady=5)
-            
-            # Show statistics
             favorite_count = len(DatabaseManager.get_user_files(self.user_id, favorites_only=True))
-            ttk.Label(
-                info_frame,
-                text=f"Favorite Files: {favorite_count}"
-            ).grid(row=3, column=0, sticky='w', pady=5)
+            ttk.Label(info_frame, text=f"Favorite Files: {favorite_count}").grid(row=3, column=0, sticky='w', pady=5)
             
             total_files = len(DatabaseManager.get_user_files(self.user_id))
-            ttk.Label(
-                info_frame,
-                text=f"Total Files: {total_files}"
-            ).grid(row=4, column=0, sticky='w', pady=5)
+            ttk.Label(info_frame, text=f"Total Files: {total_files}").grid(row=4, column=0, sticky='w', pady=5)
             
             group_count = len(DatabaseManager.get_user_groups(self.user_id))
-            ttk.Label(
-                info_frame,
-                text=f"Groups Created: {group_count}"
-            ).grid(row=5, column=0, sticky='w', pady=5)
+            ttk.Label(info_frame, text=f"Groups Created: {group_count}").grid(row=5, column=0, sticky='w', pady=5)
+            
+            ttk.Label(info_frame, text=f"Current Theme: {theme_manager.current_theme.title()}").grid(row=6, column=0, sticky='w', pady=5)
+            
+            ttk.Button(home_tab, text="Back to Home", command=self.show_home).pack(pady=20)
+
+    def show_settings(self):
+        """Show application settings"""
+        if self.notebook:
+            self.notebook.select(0)
+            home_tab = self.notebook.winfo_children()[0]
+            
+            for child in home_tab.winfo_children():
+                child.destroy()
+            
+            label = ttk.Label(home_tab, text="Application Settings", font=('Arial', 16))
+            label.pack(pady=20)
+            
+            settings_frame = ttk.Frame(home_tab)
+            settings_frame.pack(pady=10, padx=20, fill='both', expand=True)
+            
+            # Theme settings
+            theme_frame = ttk.LabelFrame(settings_frame, text="Theme Settings", padding=10)
+            theme_frame.grid(row=0, column=0, columnspan=2, sticky='ew', pady=10)
+            
+            ttk.Label(theme_frame, text="Current Theme:").grid(row=0, column=0, sticky='w', pady=5)
+            
+            theme_var = tk.StringVar(value=theme_manager.current_theme)
+            theme_combo = ttk.Combobox(theme_frame, textvariable=theme_var, values=list(theme_manager.THEMES.keys()), state="readonly")
+            theme_combo.grid(row=0, column=1, sticky='w', pady=5, padx=(10, 0))
+            
+            def change_theme(event=None):
+                selected_theme = theme_var.get()
+                theme_manager.set_theme(selected_theme)
+                if hasattr(self, 'show_vim_info'):
+                    self.show_vim_info()
+                
+            theme_combo.bind('<<ComboboxSelected>>', change_theme)
+            
+            ttk.Button(theme_frame, text="Toggle Theme", command=lambda: [self.toggle_theme(), self.show_vim_info() if hasattr(self, 'show_vim_info') else None]).grid(row=0, column=2, padx=10)
+            
+            # Vim theme settings
+            vim_frame = ttk.LabelFrame(settings_frame, text="Vim Theme Integration", padding=10)
+            vim_frame.grid(row=1, column=0, columnspan=2, sticky='ew', pady=10)
+            
+            ttk.Label(vim_frame, text="Generate matching Vim color scheme:").grid(row=0, column=0, sticky='w', pady=5)
+            
+            ttk.Button(vim_frame, text="Generate Vim Theme", command=self.generate_vim_theme).grid(row=0, column=1, padx=10)
+            ttk.Button(vim_frame, text="Show Vim Instructions", command=self.show_vim_instructions).grid(row=0, column=2, padx=5)
+            
+            # Vim info display
+            self.vim_info_frame = ttk.Frame(vim_frame)
+            self.vim_info_frame.grid(row=1, column=0, columnspan=3, sticky='ew', pady=10)
+            
+            # Other settings
+            other_frame = ttk.LabelFrame(settings_frame, text="Other Settings", padding=10)
+            other_frame.grid(row=2, column=0, columnspan=2, sticky='ew', pady=10)
+            
+            ttk.Checkbutton(other_frame, text="Email Notifications").grid(row=0, column=0, sticky='w', pady=5)
+            ttk.Checkbutton(other_frame, text="Auto-save annotations").grid(row=1, column=0, sticky='w', pady=5)
+            
+            ttk.Button(home_tab, text="Back to Home", command=self.show_home).pack(pady=20)
+            
+            # Show initial Vim info
+            self.show_vim_info()
+
+    def generate_vim_theme(self):
+        """Generate Vim theme and show confirmation"""
+        theme_manager.generate_vim_theme()
+        messagebox.showinfo(
+            "Vim Theme Generated", 
+            f"Vim theme generated successfully!\n\nTheme: {theme_manager.VIM_THEMES[theme_manager.current_theme]['name']}\nLocation: ~/.vim/colors/\n\nUse ':colorscheme {theme_manager.VIM_THEMES[theme_manager.current_theme]['name']}' in Vim"
+        )
+        self.show_vim_info()
+
+    def show_vim_instructions(self):
+        """Show Vim theme usage instructions"""
+        instructions = theme_manager.get_vim_instructions()
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Vim Theme Instructions")
+        dialog.geometry("600x400")
+        dialog.grab_set()
+        
+        x = (dialog.winfo_screenwidth() - 600) // 2
+        y = (dialog.winfo_screenheight() - 400) // 2
+        dialog.geometry(f"600x400+{x}+{y}")
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill='both', expand=True)
+        
+        text_widget = tk.Text(frame, wrap='word', height=15, width=70)
+        text_widget.pack(fill='both', expand=True, pady=10)
+        
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
+        
+        text_widget.insert('1.0', instructions)
+        text_widget.config(state='disabled')
+        
+        ttk.Button(frame, text="Close", command=dialog.destroy).pack(pady=10)
+        
+        theme_manager.apply_theme_to_widget(dialog)
+        theme_manager.apply_theme_recursive(dialog)
+
+    def show_vim_info(self):
+        """Show current Vim theme information in settings"""
+        for widget in self.vim_info_frame.winfo_children():
+            widget.destroy()
+        
+        vim_theme = theme_manager.VIM_THEMES.get(theme_manager.current_theme)
+        if vim_theme:
+            info_text = f"Current Vim theme: {vim_theme['name']}"
+            theme_path = theme_manager.get_vim_theme_path()
+            
+            if theme_path and os.path.exists(theme_path):
+                info_text += " ✓ (Generated)"
+            else:
+                info_text += " (Not generated)"
+            
+            ttk.Label(self.vim_info_frame, text=info_text).pack(anchor='w')
+            
+            if theme_path and os.path.exists(theme_path):
+                ttk.Label(self.vim_info_frame, text=f"Location: {theme_path}", font=('Arial', 8)).pack(anchor='w')
+
+    def show_about(self):
+        """Show about information"""
+        if self.notebook:
+            self.notebook.select(0)
+            home_tab = self.notebook.winfo_children()[0]
+            
+            for child in home_tab.winfo_children():
+                child.destroy()
+            
+            label = ttk.Label(home_tab, text="About This Application", font=('Arial', 16))
+            label.pack(pady=20)
+            
+            about_text = """PDF Viewer Application with Groups & Favorites
+Version 1.4.0
+Developed with Python and Tkinter
+
+Features:
+• PDF viewing and annotation
+• File organization with groups
+• File management with favorites
+• Search functionality
+• Highlight and annotation tools
+• Color-coded group system
+• Dark/Light theme support
+• Note-taking system
+• Book download from Project Gutenberg
+• Vim theme integration
+
+© 2025 All rights reserved"""
+            
+            ttk.Label(home_tab, text=about_text, justify='left').pack(pady=10)
+            
+            ttk.Button(home_tab, text="Back to Home", command=self.show_home).pack(pady=20)
