@@ -6,11 +6,334 @@ from database import DatabaseManager
 from pdf_viewer import PDFViewer
 from theme_manager import theme_manager
 import fitz
+import threading
 
 # Book download imports
 import requests
 from urllib.parse import quote
 
+# TTS imports
+try:
+    import pyttsx3
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+    print("pyttsx3 not installed. Install with: pip install pyttsx3")
+
+# ==================== PDF TEXT READER CLASS ====================
+class PDFTextReader:
+    """Text-to-Speech reader for PDF documents"""
+    
+    def __init__(self, pdf_viewer):
+        self.pdf_viewer = pdf_viewer
+        self.is_reading = False
+        self.is_paused = False
+        self.engine = None
+        self.current_text = ""
+        self.reading_thread = None
+        self.stop_event = threading.Event()
+        
+        if TTS_AVAILABLE:
+            self.initialize_engine()
+    
+    def initialize_engine(self):
+        """Initialize the TTS engine"""
+        try:
+            self.engine = pyttsx3.init()
+            self.engine.setProperty('rate', 150)
+            self.engine.setProperty('volume', 0.9)
+            
+            voices = self.engine.getProperty('voices')
+            if voices:
+                self.engine.setProperty('voice', voices[0].id)
+                
+        except Exception as e:
+            print(f"Error initializing TTS engine: {e}")
+            self.engine = None
+    
+    def extract_page_text(self, page_number=None):
+        """Extract text from current or specified page"""
+        if not self.pdf_viewer.pdf_doc:
+            return ""
+        
+        if page_number is None:
+            page_number = self.pdf_viewer.current_page
+        
+        try:
+            page = self.pdf_viewer.pdf_doc[page_number]
+            text = page.get_text()
+            text = text.strip()
+            text = ' '.join(text.split())
+            return text
+        except Exception as e:
+            print(f"Error extracting text: {e}")
+            return ""
+    
+    def read_current_page(self):
+        """Read the current page"""
+        if not TTS_AVAILABLE or not self.engine:
+            messagebox.showerror("Error", "TTS engine not available. Install pyttsx3.")
+            return
+        
+        if not self.pdf_viewer.pdf_doc:
+            messagebox.showwarning("Warning", "No PDF document loaded!")
+            return
+        
+        text = self.extract_page_text()
+        
+        if not text:
+            messagebox.showwarning("Warning", "No text found on current page!")
+            return
+        
+        self.start_reading(text)
+    
+    def read_from_page(self, start_page=None):
+        """Read from specified page to end of document"""
+        if not TTS_AVAILABLE or not self.engine:
+            messagebox.showerror("Error", "TTS engine not available. Install pyttsx3.")
+            return
+        
+        if not self.pdf_viewer.pdf_doc:
+            messagebox.showwarning("Warning", "No PDF document loaded!")
+            return
+        
+        if start_page is None:
+            start_page = self.pdf_viewer.current_page
+        
+        all_text = []
+        for page_num in range(start_page, len(self.pdf_viewer.pdf_doc)):
+            text = self.extract_page_text(page_num)
+            if text:
+                all_text.append(f"Page {page_num + 1}. {text}")
+        
+        if not all_text:
+            messagebox.showwarning("Warning", "No text found!")
+            return
+        
+        combined_text = " ... ".join(all_text)
+        self.start_reading(combined_text)
+    
+    def start_reading(self, text):
+        """Start reading text in a separate thread"""
+        if self.is_reading:
+            self.stop_reading()
+        
+        self.current_text = text
+        self.is_reading = True
+        self.is_paused = False
+        self.stop_event.clear()
+        
+        self.reading_thread = threading.Thread(target=self._read_text, daemon=True)
+        self.reading_thread.start()
+    
+    def _read_text(self):
+        """Internal method to read text (runs in separate thread)"""
+        try:
+            engine = pyttsx3.init()
+            engine.setProperty('rate', self.engine.getProperty('rate'))
+            engine.setProperty('volume', self.engine.getProperty('volume'))
+            engine.setProperty('voice', self.engine.getProperty('voice'))
+            
+            sentences = self.current_text.split('. ')
+            
+            for sentence in sentences:
+                if self.stop_event.is_set():
+                    break
+                
+                while self.is_paused and not self.stop_event.is_set():
+                    threading.Event().wait(0.1)
+                
+                if self.stop_event.is_set():
+                    break
+                
+                if sentence.strip():
+                    engine.say(sentence)
+                    engine.runAndWait()
+            
+            self.is_reading = False
+            
+        except Exception as e:
+            print(f"Error during reading: {e}")
+            self.is_reading = False
+    
+    def pause_reading(self):
+        """Pause reading"""
+        if self.is_reading and not self.is_paused:
+            self.is_paused = True
+    
+    def resume_reading(self):
+        """Resume reading"""
+        if self.is_reading and self.is_paused:
+            self.is_paused = False
+    
+    def stop_reading(self):
+        """Stop reading"""
+        if self.is_reading:
+            self.stop_event.set()
+            self.is_reading = False
+            self.is_paused = False
+            
+            if self.reading_thread and self.reading_thread.is_alive():
+                self.reading_thread.join(timeout=1.0)
+    
+    def set_speed(self, speed):
+        """Set reading speed (words per minute)"""
+        if self.engine:
+            self.engine.setProperty('rate', speed)
+    
+    def set_volume(self, volume):
+        """Set reading volume (0.0 to 1.0)"""
+        if self.engine:
+            self.engine.setProperty('volume', volume)
+    
+    def get_available_voices(self):
+        """Get list of available voices"""
+        if self.engine:
+            return self.engine.getProperty('voices')
+        return []
+
+# ==================== PDF READER CONTROLS CLASS ====================
+class PDFReaderControls:
+    """UI Controls for PDF Text Reader"""
+    
+    def __init__(self, parent_frame, pdf_viewer):
+        self.parent_frame = parent_frame
+        self.pdf_viewer = pdf_viewer
+        self.reader = PDFTextReader(pdf_viewer)
+        self.setup_ui()
+    
+    def setup_ui(self):
+        """Setup the reader control UI"""
+        control_frame = ttk.LabelFrame(self.parent_frame, text="📖 Text Reader (TTS)", padding=10)
+        control_frame.pack(fill='x', padx=5, pady=5)
+        
+        button_frame = ttk.Frame(control_frame)
+        button_frame.pack(fill='x', pady=5)
+        
+        self.read_page_btn = ttk.Button(
+            button_frame,
+            text="▶ Read Page",
+            command=self.reader.read_current_page
+        )
+        self.read_page_btn.pack(side='left', padx=2)
+        
+        self.read_from_btn = ttk.Button(
+            button_frame,
+            text="▶▶ Read From Here",
+            command=self.reader.read_from_page
+        )
+        self.read_from_btn.pack(side='left', padx=2)
+        
+        self.pause_btn = ttk.Button(
+            button_frame,
+            text="⏸ Pause",
+            command=self.toggle_pause,
+            state='disabled'
+        )
+        self.pause_btn.pack(side='left', padx=2)
+        
+        self.stop_btn = ttk.Button(
+            button_frame,
+            text="⏹ Stop",
+            command=self.stop_reading,
+            state='disabled'
+        )
+        self.stop_btn.pack(side='left', padx=2)
+        
+        settings_frame = ttk.Frame(control_frame)
+        settings_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(settings_frame, text="Speed:").pack(side='left', padx=5)
+        
+        self.speed_var = tk.IntVar(value=150)
+        speed_scale = ttk.Scale(
+            settings_frame,
+            from_=50,
+            to=300,
+            variable=self.speed_var,
+            orient='horizontal',
+            length=150,
+            command=self.on_speed_change
+        )
+        speed_scale.pack(side='left', padx=5)
+        
+        self.speed_label = ttk.Label(settings_frame, text="150 WPM")
+        self.speed_label.pack(side='left', padx=5)
+        
+        ttk.Label(settings_frame, text="Volume:").pack(side='left', padx=5)
+        
+        self.volume_var = tk.DoubleVar(value=0.9)
+        volume_scale = ttk.Scale(
+            settings_frame,
+            from_=0.0,
+            to=1.0,
+            variable=self.volume_var,
+            orient='horizontal',
+            length=100,
+            command=self.on_volume_change
+        )
+        volume_scale.pack(side='left', padx=5)
+        
+        self.status_label = ttk.Label(control_frame, text="Ready", font=('Arial', 9, 'italic'))
+        self.status_label.pack(pady=5)
+        
+        self.update_status()
+        
+        if not TTS_AVAILABLE:
+            self.status_label.config(text="⚠️ TTS not available. Install pyttsx3.")
+            self.read_page_btn.config(state='disabled')
+            self.read_from_btn.config(state='disabled')
+    
+    def toggle_pause(self):
+        """Toggle pause/resume"""
+        if self.reader.is_paused:
+            self.reader.resume_reading()
+            self.pause_btn.config(text="⏸ Pause")
+        else:
+            self.reader.pause_reading()
+            self.pause_btn.config(text="▶ Resume")
+    
+    def stop_reading(self):
+        """Stop reading"""
+        self.reader.stop_reading()
+        self.pause_btn.config(text="⏸ Pause", state='disabled')
+        self.stop_btn.config(state='disabled')
+        self.read_page_btn.config(state='normal')
+        self.read_from_btn.config(state='normal')
+    
+    def on_speed_change(self, value):
+        """Handle speed change"""
+        speed = int(float(value))
+        self.speed_label.config(text=f"{speed} WPM")
+        self.reader.set_speed(speed)
+    
+    def on_volume_change(self, value):
+        """Handle volume change"""
+        volume = float(value)
+        self.reader.set_volume(volume)
+    
+    def update_status(self):
+        """Update reading status"""
+        if self.reader.is_reading:
+            if self.reader.is_paused:
+                self.status_label.config(text="⏸ Paused")
+            else:
+                self.status_label.config(text="🔊 Reading...")
+            
+            self.pause_btn.config(state='normal')
+            self.stop_btn.config(state='normal')
+            self.read_page_btn.config(state='disabled')
+            self.read_from_btn.config(state='disabled')
+        else:
+            self.status_label.config(text="Ready")
+            self.pause_btn.config(text="⏸ Pause", state='disabled')
+            self.stop_btn.config(state='disabled')
+            self.read_page_btn.config(state='normal')
+            self.read_from_btn.config(state='normal')
+        
+        self.parent_frame.after(200, self.update_status)
+
+# ==================== GROUP DIALOG CLASS ====================
 class GroupDialog:
     def __init__(self, parent, user_id, group_data=None):
         self.parent = parent
@@ -24,7 +347,6 @@ class GroupDialog:
         self.dialog.grab_set()
         self.dialog.transient(parent)
         
-        # Center dialog
         self.dialog.geometry("400x250")
         self.dialog.update_idletasks()
         x = (self.dialog.winfo_screenwidth() - 400) // 2
@@ -38,19 +360,16 @@ class GroupDialog:
         main_frame = ttk.Frame(self.dialog, padding=20)
         main_frame.pack(fill='both', expand=True)
         
-        # Group name
         ttk.Label(main_frame, text="Group Name:").grid(row=0, column=0, sticky='w', pady=5)
         self.name_var = tk.StringVar(value=self.group_data[1] if self.group_data else "")
         ttk.Entry(main_frame, textvariable=self.name_var, width=30).grid(row=0, column=1, columnspan=2, sticky='ew', pady=5)
         
-        # Description
         ttk.Label(main_frame, text="Description:").grid(row=1, column=0, sticky='nw', pady=5)
         self.desc_text = tk.Text(main_frame, height=4, width=30)
         self.desc_text.grid(row=1, column=1, columnspan=2, sticky='ew', pady=5)
         if self.group_data and self.group_data[2]:
             self.desc_text.insert('1.0', self.group_data[2])
         
-        # Color selection
         ttk.Label(main_frame, text="Color:").grid(row=2, column=0, sticky='w', pady=5)
         
         color_frame = ttk.Frame(main_frame)
@@ -61,7 +380,6 @@ class GroupDialog:
         
         ttk.Button(color_frame, text="Choose Color", command=self.choose_color).pack(side='left')
         
-        # Buttons
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=3, column=0, columnspan=3, pady=20)
         
@@ -71,7 +389,6 @@ class GroupDialog:
         main_frame.grid_columnconfigure(1, weight=1)
         
     def apply_theme(self):
-        """Apply current theme to dialog"""
         theme_manager.apply_theme_to_widget(self.dialog)
         theme_manager.apply_theme_recursive(self.dialog)
         
@@ -89,13 +406,13 @@ class GroupDialog:
             
         description = self.desc_text.get('1.0', 'end-1c').strip()
         
-        if self.group_data:  # Edit existing group
+        if self.group_data:
             if DatabaseManager.update_group(self.group_data[0], name, description, self.selected_color):
                 self.result = (name, description, self.selected_color)
                 self.dialog.destroy()
             else:
                 messagebox.showerror("Error", "Failed to update group!")
-        else:  # Create new group
+        else:
             group_id = DatabaseManager.create_group(self.user_id, name, description, self.selected_color)
             if group_id:
                 self.result = (group_id, name, description, self.selected_color)
@@ -103,6 +420,7 @@ class GroupDialog:
             else:
                 messagebox.showerror("Error", "Failed to create group!")
 
+# ==================== BOOK DOWNLOAD DIALOG CLASS ====================
 class BookDownloadDialog:
     def __init__(self, parent, user_id):
         self.parent = parent
@@ -115,7 +433,6 @@ class BookDownloadDialog:
         self.dialog.grab_set()
         self.dialog.transient(parent)
         
-        # Set size
         self.dialog.geometry("800x600")
         self.dialog.update_idletasks()
         x = (self.dialog.winfo_screenwidth() - 800) // 2
@@ -129,7 +446,6 @@ class BookDownloadDialog:
         main_frame = ttk.Frame(self.dialog, padding=20)
         main_frame.pack(fill='both', expand=True)
         
-        # Search frame
         search_frame = ttk.Frame(main_frame)
         search_frame.pack(fill='x', pady=(0, 10))
         
@@ -142,11 +458,9 @@ class BookDownloadDialog:
         
         ttk.Button(search_frame, text="Search", command=self.search_books).pack(side='left', padx=5)
         
-        # Results frame
         results_frame = ttk.LabelFrame(main_frame, text="Search Results", padding=10)
         results_frame.pack(fill='both', expand=True, pady=10)
         
-        # Treeview for results
         columns = ("Title", "Author", "Language", "ID")
         self.results_tree = ttk.Treeview(
             results_frame,
@@ -169,7 +483,6 @@ class BookDownloadDialog:
         self.results_tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
         
-        # Buttons frame
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill='x', pady=10)
         
@@ -177,7 +490,6 @@ class BookDownloadDialog:
         ttk.Button(button_frame, text="Download Selected (EPUB)", command=lambda: self.download_selected('epub')).pack(side='left', padx=5)
         ttk.Button(button_frame, text="Close", command=self.dialog.destroy).pack(side='right', padx=5)
         
-        # Status label
         self.status_label = ttk.Label(main_frame, text="Enter a search term and click Search")
         self.status_label.pack(pady=5)
     
@@ -195,7 +507,6 @@ class BookDownloadDialog:
         self.dialog.update()
         
         try:
-            # Project Gutenberg API
             url = f"https://gutendex.com/books/?search={quote(search_term)}"
             response = requests.get(url, timeout=10)
             
@@ -203,14 +514,13 @@ class BookDownloadDialog:
                 data = response.json()
                 results = data.get('results', [])
                 
-                # Clear previous results
                 for item in self.results_tree.get_children():
                     self.results_tree.delete(item)
                 
                 self.search_results = []
                 
                 if results:
-                    for book in results[:50]:  # Limit to 50 results
+                    for book in results[:50]:
                         title = book.get('title', 'Unknown')
                         authors = ', '.join([a.get('name', 'Unknown') for a in book.get('authors', [])])
                         languages = ', '.join(book.get('languages', []))
@@ -243,7 +553,6 @@ class BookDownloadDialog:
         book_id = item_values[3]
         title = item_values[0]
         
-        # Find the book in search results
         book = None
         for b in self.search_results:
             if b.get('id') == book_id:
@@ -258,7 +567,6 @@ class BookDownloadDialog:
         self.dialog.update()
         
         try:
-            # Get download URL from formats
             formats = book.get('formats', {})
             download_url = None
             
@@ -272,25 +580,20 @@ class BookDownloadDialog:
                 self.status_label.config(text="Download failed")
                 return
             
-            # Download the file
             response = requests.get(download_url, timeout=30)
             
             if response.status_code == 200:
-                # Create directory for downloads
                 user_dir = os.path.join("user_files", str(self.user_id), "downloads")
                 os.makedirs(user_dir, exist_ok=True)
                 
-                # Clean filename
                 safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
-                safe_title = safe_title[:100]  # Limit filename length
+                safe_title = safe_title[:100]
                 filename = f"{safe_title}.{format_type}"
                 filepath = os.path.join(user_dir, filename)
                 
-                # Save file
                 with open(filepath, 'wb') as f:
                     f.write(response.content)
                 
-                # Save to database
                 if DatabaseManager.save_file(self.user_id, filename, filepath, f'.{format_type}'):
                     self.status_label.config(text="Download complete!")
                     messagebox.showinfo("Success", f"Book '{title}' downloaded successfully!")
@@ -306,6 +609,7 @@ class BookDownloadDialog:
             messagebox.showerror("Error", f"Download error: {str(e)}")
             self.status_label.config(text="Download failed")
 
+# ==================== ANOTACAO DIALOG CLASS ====================
 class AnotacaoDialog:
     def __init__(self, parent, user_id, anotacao_data=None):
         self.parent = parent
@@ -319,7 +623,6 @@ class AnotacaoDialog:
         self.dialog.grab_set()
         self.dialog.transient(parent)
         
-        # Center dialog
         self.dialog.update_idletasks()
         x = (self.dialog.winfo_screenwidth() - 600) // 2
         y = (self.dialog.winfo_screenheight() - 500) // 2
@@ -332,12 +635,10 @@ class AnotacaoDialog:
         main_frame = ttk.Frame(self.dialog, padding=20)
         main_frame.pack(fill='both', expand=True)
         
-        # Title
         ttk.Label(main_frame, text="Title:").grid(row=0, column=0, sticky='w', pady=5)
         self.titulo_var = tk.StringVar(value=self.anotacao_data[2] if self.anotacao_data else "")
         ttk.Entry(main_frame, textvariable=self.titulo_var, width=50).grid(row=0, column=1, sticky='ew', pady=5)
         
-        # Content
         ttk.Label(main_frame, text="Content:").grid(row=1, column=0, sticky='nw', pady=5)
         self.conteudo_text = tk.Text(main_frame, height=15, width=50)
         self.conteudo_text.grid(row=1, column=1, sticky='nsew', pady=5)
@@ -345,7 +646,6 @@ class AnotacaoDialog:
         if self.anotacao_data and self.anotacao_data[3]:
             self.conteudo_text.insert('1.0', self.anotacao_data[3])
         
-        # Metadata
         meta_frame = ttk.Frame(main_frame)
         meta_frame.grid(row=2, column=1, sticky='ew', pady=10)
         
@@ -353,19 +653,16 @@ class AnotacaoDialog:
         self.tags_var = tk.StringVar(value=self.anotacao_data[6] if self.anotacao_data else "")
         ttk.Entry(meta_frame, textvariable=self.tags_var, width=30).pack(side='left', padx=5)
         
-        # Buttons
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=3, column=0, columnspan=2, pady=20)
         
         ttk.Button(button_frame, text="Save", command=self.salvar_anotacao).pack(side='left', padx=10)
         ttk.Button(button_frame, text="Cancel", command=self.dialog.destroy).pack(side='left', padx=10)
         
-        # Configure weights
         main_frame.grid_columnconfigure(1, weight=1)
         main_frame.grid_rowconfigure(1, weight=1)
     
     def apply_theme(self):
-        """Apply current theme to dialog"""
         theme_manager.apply_theme_to_widget(self.dialog)
         theme_manager.apply_theme_recursive(self.dialog)
     
@@ -378,7 +675,7 @@ class AnotacaoDialog:
         conteudo = self.conteudo_text.get('1.0', 'end-1c').strip()
         tags = self.tags_var.get().strip()
         
-        if self.anotacao_data:  # Edit
+        if self.anotacao_data:
             if DatabaseManager.atualizar_anotacao_geral(
                 self.anotacao_data[0], titulo, conteudo, tags
             ):
@@ -386,7 +683,7 @@ class AnotacaoDialog:
                 self.dialog.destroy()
             else:
                 messagebox.showerror("Error", "Failed to update note!")
-        else:  # Create new
+        else:
             anotacao_id = DatabaseManager.criar_anotacao_geral(
                 self.user_id, titulo, conteudo, tags=tags
             )
@@ -396,6 +693,7 @@ class AnotacaoDialog:
             else:
                 messagebox.showerror("Error", "Failed to create note!")
 
+# ==================== MAIN APPLICATION CLASS ====================
 class MainApplication:
     def __init__(self, root, user_email):
         self.root = root
@@ -403,10 +701,10 @@ class MainApplication:
         self.user_id = DatabaseManager.get_user_id(user_email)
         self.notebook = None
         self.pdf_viewer = None
+        self.pdf_reader_controls = None
         self.show_favorites_only = False
         self.selected_group_id = None
         
-        # Initialize theme
         theme_manager.register_callback(self.on_theme_change)
         
         self.configure_window()
@@ -415,8 +713,7 @@ class MainApplication:
         self.apply_theme()
 
     def configure_window(self):
-        """Configure main window settings"""
-        self.root.title("PDF Viewer Application")
+        self.root.title("PDF Viewer Application with TTS")
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         window_width = int(screen_width * 0.8)
@@ -426,10 +723,8 @@ class MainApplication:
         self.root.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
 
     def create_menu(self):
-        """Create the main menu bar"""
         menubar = tk.Menu(self.root)
         
-        # File menu
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Home", command=self.show_home)
         file_menu.add_separator()
@@ -438,13 +733,11 @@ class MainApplication:
         file_menu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=file_menu)
         
-        # User menu
         user_menu = tk.Menu(menubar, tearoff=0)
         user_menu.add_command(label="Profile", command=self.show_profile)
         user_menu.add_command(label="Settings", command=self.show_settings)
         menubar.add_cascade(label="User", menu=user_menu)
         
-        # View menu
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(label="Toggle Dark/Light Theme", command=self.toggle_theme)
         view_menu.add_separator()
@@ -462,7 +755,6 @@ class MainApplication:
         )
         menubar.add_cascade(label="View", menu=view_menu)
         
-        # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About", command=self.show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -470,40 +762,28 @@ class MainApplication:
         self.root.config(menu=menubar)
 
     def show_book_download(self):
-        """Show book download dialog"""
         dialog = BookDownloadDialog(self.root, self.user_id)
         self.root.wait_window(dialog.dialog)
         
         if dialog.result:
-            # Refresh file list after download
             self.refresh_file_list()
             self.refresh_groups_list()
 
     def toggle_theme(self):
-        """Toggle between light and dark themes"""
         theme_manager.toggle_theme()
 
     def set_theme(self, theme_name):
-        """Set specific theme"""
         theme_manager.set_theme(theme_name)
 
     def on_theme_change(self, theme_name):
-        """Callback for when theme changes"""
         self.apply_theme()
 
     def apply_theme(self):
-        """Apply current theme to all widgets"""
         try:
-            # Apply TTK theme first
             theme_manager.apply_ttk_theme(self.root)
-            
-            # Apply to root window
             theme_manager.apply_theme_to_widget(self.root)
-            
-            # Apply to all child widgets recursively
             theme_manager.apply_theme_recursive(self.root)
             
-            # Special handling for PDF viewer canvas
             if self.pdf_viewer and hasattr(self.pdf_viewer, 'canvas'):
                 theme = theme_manager.get_theme()
                 self.pdf_viewer.canvas.configure(bg=theme['canvas_bg'])
@@ -512,52 +792,68 @@ class MainApplication:
             print(f"Error applying theme: {e}")
 
     def setup_interface(self):
-        """Set up the main interface"""
         main_frame = ttk.Frame(self.root)
         main_frame.pack(expand=True, fill='both', padx=10, pady=10)
         
         self.notebook = ttk.Notebook(main_frame)
         self.notebook.pack(expand=True, fill='both')
         
-        # Home tab
         home_tab = ttk.Frame(self.notebook)
         self.notebook.add(home_tab, text="Home")
         
-        # PDF Viewer tab
         pdf_tab = ttk.Frame(self.notebook)
         self.notebook.add(pdf_tab, text="PDF Viewer")
         
-        # Library tab
         library_tab = ttk.Frame(self.notebook)
         self.notebook.add(library_tab, text="My Library")
         
-        # Notes tab
         notes_tab = ttk.Frame(self.notebook)
         self.notebook.add(notes_tab, text="My Notes")
         
+        # Setup PDF Viewer
         self.pdf_viewer = PDFViewer(pdf_tab)
+        
+        # Add TTS controls AFTER pdf_viewer is created and its widgets are ready
+        self.root.after(100, self.setup_tts_controls)
+        
         self.setup_library_tab(library_tab)
         self.setup_notes_tab(notes_tab)
         self.show_home()
 
+    def setup_tts_controls(self):
+        """Setup TTS controls for PDF viewer"""
+        try:
+            # Get the PDF tab directly
+            pdf_tab = self.pdf_viewer.parent
+            
+            # Create a dedicated frame for TTS controls
+            # Pack it AFTER the main_frame but in the same parent
+            tts_container = ttk.Frame(pdf_tab)
+            tts_container.pack(side='bottom', fill='x', padx=10, pady=5)
+            
+            # Create the TTS controls
+            self.pdf_reader_controls = PDFReaderControls(tts_container, self.pdf_viewer)
+            
+            print("TTS controls created successfully!")
+            
+        except Exception as e:
+            print(f"Error setting up TTS controls: {e}")
+            import traceback
+            traceback.print_exc()
+
     def setup_notes_tab(self, tab):
-        """Set up the notes tab interface"""
-        # Main container
         main_container = ttk.Frame(tab)
         main_container.pack(expand=True, fill='both', padx=10, pady=10)
         
-        # Top controls
         controls_frame = ttk.Frame(main_container)
         controls_frame.pack(fill='x', pady=(0, 10))
         
-        # New note button
         ttk.Button(
             controls_frame, 
             text="+ New Note", 
             command=self.criar_nova_anotacao
         ).pack(side='left', padx=5)
         
-        # Filters
         filter_frame = ttk.Frame(controls_frame)
         filter_frame.pack(side='right')
         
@@ -574,7 +870,6 @@ class MainApplication:
         filtro_combo.pack(side='left', padx=5)
         filtro_combo.bind('<<ComboboxSelected>>', self.filtrar_anotacoes)
         
-        # Search
         search_frame = ttk.Frame(controls_frame)
         search_frame.pack(side='right', padx=20)
         
@@ -587,11 +882,9 @@ class MainApplication:
         
         ttk.Button(search_frame, text="Search", command=self.buscar_anotacoes).pack(side='left', padx=5)
         
-        # Notes listing area
         list_frame = ttk.Frame(main_container)
         list_frame.pack(fill='both', expand=True)
         
-        # Treeview for notes
         columns = ("ID", "Title", "File", "Group", "Date", "Favorite")
         self.anotacoes_tree = ttk.Treeview(
             list_frame,
@@ -601,7 +894,6 @@ class MainApplication:
             height=15
         )
         
-        # Configure columns
         self.anotacoes_tree.column("ID", width=40, anchor='center')
         self.anotacoes_tree.column("Title", width=200, anchor='w')
         self.anotacoes_tree.column("File", width=150, anchor='w')
@@ -609,18 +901,15 @@ class MainApplication:
         self.anotacoes_tree.column("Date", width=120, anchor='center')
         self.anotacoes_tree.column("Favorite", width=60, anchor='center')
         
-        # Configure headings
         for col in columns:
             self.anotacoes_tree.heading(col, text=col)
         
-        # Scrollbar
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.anotacoes_tree.yview)
         self.anotacoes_tree.configure(yscrollcommand=scrollbar.set)
         
         self.anotacoes_tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
         
-        # Action buttons
         action_frame = ttk.Frame(main_container)
         action_frame.pack(fill='x', pady=(10, 0))
         
@@ -629,17 +918,12 @@ class MainApplication:
         ttk.Button(action_frame, text="Toggle Favorite", command=self.toggle_favorito_anotacao).pack(side='left', padx=5)
         ttk.Button(action_frame, text="Refresh", command=self.carregar_anotacoes).pack(side='right', padx=5)
         
-        # Load notes initially
         self.carregar_anotacoes()
 
-    # Notes control methods
     def carregar_anotacoes(self):
-        """Load user notes"""
-        # Clear treeview
         for item in self.anotacoes_tree.get_children():
             self.anotacoes_tree.delete(item)
         
-        # Get notes from database
         anotacoes = DatabaseManager.get_anotacoes_gerais(self.user_id)
         
         for anotacao in anotacoes:
@@ -649,7 +933,6 @@ class MainApplication:
             nome_arquivo = nome_arquivo if nome_arquivo else "No file"
             nome_grupo = nome_grupo if nome_grupo else "No group"
             
-            # Format date
             from datetime import datetime
             try:
                 data_obj = datetime.strptime(data_criacao, '%Y-%m-%d %H:%M:%S')
@@ -662,7 +945,6 @@ class MainApplication:
             ))
 
     def criar_nova_anotacao(self):
-        """Open dialog to create new note"""
         dialog = AnotacaoDialog(self.root, self.user_id)
         self.root.wait_window(dialog.dialog)
         
@@ -671,7 +953,6 @@ class MainApplication:
             messagebox.showinfo("Success", "Note created successfully!")
 
     def ver_editar_anotacao(self):
-        """View/edit selected note"""
         selection = self.anotacoes_tree.selection()
         if not selection:
             messagebox.showwarning("Warning", "Please select a note first!")
@@ -680,7 +961,6 @@ class MainApplication:
         item = selection[0]
         anotacao_id = self.anotacoes_tree.item(item)['values'][0]
         
-        # Get complete note data
         anotacoes = DatabaseManager.get_anotacoes_gerais(self.user_id)
         anotacao_data = None
         for anot in anotacoes:
@@ -697,7 +977,6 @@ class MainApplication:
                 messagebox.showinfo("Success", "Note updated successfully!")
 
     def deletar_anotacao(self):
-        """Delete selected note"""
         selection = self.anotacoes_tree.selection()
         if not selection:
             messagebox.showwarning("Warning", "Please select a note first!")
@@ -715,7 +994,6 @@ class MainApplication:
                 messagebox.showerror("Error", "Failed to delete note!")
 
     def toggle_favorito_anotacao(self):
-        """Toggle note favorite status"""
         selection = self.anotacoes_tree.selection()
         if not selection:
             messagebox.showwarning("Warning", "Please select a note first!")
@@ -734,17 +1012,14 @@ class MainApplication:
             messagebox.showerror("Error", "Failed to update favorite status!")
 
     def filtrar_anotacoes(self, event=None):
-        """Filter notes based on selected criteria"""
         self.carregar_anotacoes()
 
     def buscar_anotacoes(self):
-        """Search notes by text"""
         termo = self.busca_anotacoes_var.get().lower()
         if not termo:
             self.carregar_anotacoes()
             return
         
-        # Simple search implementation
         for item in self.anotacoes_tree.get_children():
             valores = self.anotacoes_tree.item(item)['values']
             titulo = valores[1].lower()
@@ -755,41 +1030,33 @@ class MainApplication:
                 break
 
     def setup_library_tab(self, tab):
-        """Set up the library tab interface"""
-        # Main container with paned window for groups sidebar
         paned_window = ttk.PanedWindow(tab, orient='horizontal')
         paned_window.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Left panel for groups
         groups_frame = ttk.Frame(paned_window, width=250)
         paned_window.add(groups_frame, weight=0)
         
-        # Groups header
         groups_header = ttk.Frame(groups_frame)
         groups_header.pack(fill='x', pady=(0, 10))
         
         ttk.Label(groups_header, text="Groups", font=('Arial', 12, 'bold')).pack(side='left')
         ttk.Button(groups_header, text="+", width=3, command=self.create_group).pack(side='right')
         
-        # Groups list
         self.groups_listbox = tk.Listbox(groups_frame, height=15)
         self.groups_listbox.pack(fill='both', expand=True)
         self.groups_listbox.bind('<<ListboxSelect>>', self.on_group_select)
         self.groups_listbox.bind('<Double-Button-1>', self.edit_selected_group)
         self.groups_listbox.bind('<Button-3>', self.show_group_context_menu)
         
-        # Groups buttons
         groups_buttons = ttk.Frame(groups_frame)
         groups_buttons.pack(fill='x', pady=(5, 0))
         
         ttk.Button(groups_buttons, text="Edit", command=self.edit_selected_group).pack(side='left', padx=(0, 5))
         ttk.Button(groups_buttons, text="Delete", command=self.delete_selected_group).pack(side='left')
         
-        # Right panel for files
         files_frame = ttk.Frame(paned_window)
         paned_window.add(files_frame, weight=1)
         
-        # Search frame
         search_frame = ttk.Frame(files_frame)
         search_frame.pack(fill='x', pady=(0, 10))
         
@@ -802,7 +1069,6 @@ class MainApplication:
         ttk.Button(search_frame, text="Search", command=self.search_files).pack(side='left', padx=5)
         ttk.Button(search_frame, text="Clear", command=self.clear_search).pack(side='left', padx=5)
         
-        # Filter frame
         filter_frame = ttk.Frame(files_frame)
         filter_frame.pack(fill='x', pady=(0, 10))
         
@@ -814,41 +1080,33 @@ class MainApplication:
             command=self.toggle_favorites_filter
         ).pack(side='left', padx=5)
         
-        # Upload and group selection frame
         upload_frame = ttk.Frame(files_frame)
         upload_frame.pack(fill='x', pady=(0, 10))
         
         ttk.Button(upload_frame, text="Upload File", command=self.upload_file).pack(side='left', padx=5)
         
-        # Group selection for upload
         ttk.Label(upload_frame, text="To Group:").pack(side='left', padx=(20, 5))
         self.upload_group_var = tk.StringVar()
         self.upload_group_combo = ttk.Combobox(upload_frame, textvariable=self.upload_group_var, width=15, state='readonly')
         self.upload_group_combo.pack(side='left', padx=5)
         
-        # File list
         self.file_list_frame = ttk.Frame(files_frame)
         self.file_list_frame.pack(expand=True, fill='both')
         
-        # Refresh button
         refresh_frame = ttk.Frame(files_frame)
         refresh_frame.pack(fill='x', pady=(10, 0))
         
         ttk.Button(refresh_frame, text="Refresh List", command=self.refresh_file_list).pack(side='left', padx=5)
         
-        # Bind Enter key to search
         search_entry.bind('<Return>', lambda event: self.search_files())
         
-        # Load initial data
         self.refresh_groups_list()
         self.refresh_file_list()
 
     def refresh_groups_list(self):
-        """Refresh the groups list"""
         self.groups_listbox.delete(0, tk.END)
         
-        # Add "All Files" option
-        self.groups_listbox.insert(tk.END, "📁 All Files")
+        self.groups_listbox.insert(tk.END, "📚 All Files")
         self.groups_listbox.insert(tk.END, "📂 Ungrouped Files")
         
         groups = DatabaseManager.get_user_groups(self.user_id)
@@ -858,7 +1116,6 @@ class MainApplication:
             display_name = f"🏷️ {name} ({file_count})"
             self.groups_listbox.insert(tk.END, display_name)
         
-        # Update upload group combo
         group_options = ["No Group"]
         for group in groups:
             group_options.append(group[1])
@@ -868,7 +1125,6 @@ class MainApplication:
             self.upload_group_combo.set(group_options[0])
 
     def on_group_select(self, event=None):
-        """Handle group selection"""
         selection = self.groups_listbox.curselection()
         if not selection:
             return
@@ -886,7 +1142,6 @@ class MainApplication:
         self.refresh_file_list()
 
     def create_group(self):
-        """Create a new group"""
         dialog = GroupDialog(self.root, self.user_id)
         self.root.wait_window(dialog.dialog)
         
@@ -895,7 +1150,6 @@ class MainApplication:
             messagebox.showinfo("Success", "Group created successfully!")
 
     def edit_selected_group(self, event=None):
-        """Edit the selected group"""
         selection = self.groups_listbox.curselection()
         if not selection or selection[0] < 2:
             return
@@ -912,7 +1166,6 @@ class MainApplication:
                 messagebox.showinfo("Success", "Group updated successfully!")
 
     def delete_selected_group(self):
-        """Delete the selected group"""
         selection = self.groups_listbox.curselection()
         if not selection or selection[0] < 2:
             return
@@ -938,7 +1191,6 @@ class MainApplication:
                     messagebox.showerror("Error", "Failed to delete group!")
 
     def show_group_context_menu(self, event):
-        """Show context menu for groups"""
         selection = self.groups_listbox.curselection()
         if not selection or selection[0] < 2:
             return
@@ -953,12 +1205,10 @@ class MainApplication:
             context_menu.grab_release()
 
     def toggle_favorites_filter(self):
-        """Toggle between showing all files and only favorites"""
         self.show_favorites_only = self.show_favorites_var.get()
         self.refresh_file_list()
 
     def search_files(self):
-        """Search files based on the search term"""
         search_term = self.search_var.get().lower()
         
         if not search_term:
@@ -993,12 +1243,10 @@ class MainApplication:
         self.create_file_treeview(filtered_files)
 
     def clear_search(self):
-        """Clear the search and show all files"""
         self.search_var.set("")
         self.refresh_file_list()
 
     def upload_file(self):
-        """Handle file upload"""
         filetypes = [
             ("PDF Files", "*.pdf"),
             ("Text Files", "*.txt"),
@@ -1044,7 +1292,6 @@ class MainApplication:
                 messagebox.showerror("Error", f"Failed to upload file: {str(e)}")
 
     def create_file_treeview(self, files):
-        """Create treeview to display files"""
         columns = ("ID", "Filename", "Type", "Date", "Favorite", "Group")
         tree = ttk.Treeview(
             self.file_list_frame,
@@ -1080,7 +1327,6 @@ class MainApplication:
         ttk.Button(button_frame, text="Delete File", command=lambda: self.delete_selected_file(tree)).pack(side='left', padx=5)
 
     def move_file_to_group(self, tree):
-        """Move selected file to a different group"""
         selected_item = tree.focus()
         if not selected_item:
             messagebox.showwarning("Warning", "Please select a file first!")
@@ -1141,7 +1387,6 @@ class MainApplication:
         theme_manager.apply_theme_recursive(dialog)
 
     def refresh_file_list(self):
-        """Refresh the list of files in the library"""
         search_term = self.search_var.get().lower()
         
         if search_term:
@@ -1179,7 +1424,6 @@ class MainApplication:
         self.create_file_treeview(files)
 
     def toggle_file_favorite(self, tree):
-        """Toggle favorite status of the selected file"""
         selected_item = tree.focus()
         if not selected_item:
             messagebox.showwarning("Warning", "Please select a file first!")
@@ -1199,7 +1443,6 @@ class MainApplication:
             messagebox.showerror("Error", "Failed to update favorite status!")
 
     def open_selected_file(self, tree):
-        """Open the selected file"""
         selected_item = tree.focus()
         if not selected_item:
             messagebox.showwarning("Warning", "Please select a file first!")
@@ -1227,7 +1470,6 @@ class MainApplication:
             messagebox.showerror("Error", f"Failed to open file: {str(e)}")
 
     def delete_selected_file(self, tree):
-        """Delete the selected file"""
         selected_item = tree.focus()
         if not selected_item:
             messagebox.showwarning("Warning", "Please select a file first!")
@@ -1257,7 +1499,6 @@ class MainApplication:
                 messagebox.showerror("Error", f"Failed to delete file: {str(e)}")
 
     def show_home(self):
-        """Show the home screen"""
         if self.notebook:
             self.notebook.select(0)
             
@@ -1266,22 +1507,38 @@ class MainApplication:
             
             label = ttk.Label(
                 self.notebook.winfo_children()[0],
-                text=f"Welcome, {self.user_email}!\nThis is the home screen.", 
+                text=f"Welcome, {self.user_email}!\n\nPDF Viewer Application with Text-to-Speech", 
                 font=('Arial', 16),
                 justify='center'
             )
-            label.pack(expand=True)
+            label.pack(expand=True, pady=20)
+            
+            # Info frame
+            info_frame = ttk.LabelFrame(self.notebook.winfo_children()[0], text="Quick Stats", padding=20)
+            info_frame.pack(pady=20)
+            
+            total_files = len(DatabaseManager.get_user_files(self.user_id))
+            favorite_files = len(DatabaseManager.get_user_files(self.user_id, favorites_only=True))
+            total_groups = len(DatabaseManager.get_user_groups(self.user_id))
+            
+            ttk.Label(info_frame, text=f"📚 Total Files: {total_files}", font=('Arial', 12)).pack(pady=5)
+            ttk.Label(info_frame, text=f"⭐ Favorite Files: {favorite_files}", font=('Arial', 12)).pack(pady=5)
+            ttk.Label(info_frame, text=f"🏷️  Groups: {total_groups}", font=('Arial', 12)).pack(pady=5)
+            
+            if TTS_AVAILABLE:
+                ttk.Label(info_frame, text="🔊 Text-to-Speech: Enabled", font=('Arial', 12), foreground='green').pack(pady=5)
+            else:
+                ttk.Label(info_frame, text="⚠️  Text-to-Speech: Disabled (install pyttsx3)", font=('Arial', 12), foreground='orange').pack(pady=5)
             
             button_frame = ttk.Frame(self.notebook.winfo_children()[0])
             button_frame.pack(pady=20)
             
-            ttk.Button(button_frame, text="Open Profile", command=self.show_profile).pack(side='left', padx=10)
-            ttk.Button(button_frame, text="Open Settings", command=self.show_settings).pack(side='left', padx=10)
-            ttk.Button(button_frame, text="Open PDF Viewer", command=lambda: self.notebook.select(1)).pack(side='left', padx=10)
-            ttk.Button(button_frame, text="Open My Library", command=lambda: self.notebook.select(2)).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="📊 Open Profile", command=self.show_profile, width=20).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="⚙️  Open Settings", command=self.show_settings, width=20).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="📄 Open PDF Viewer", command=lambda: self.notebook.select(1), width=20).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="📚 Open My Library", command=lambda: self.notebook.select(2), width=20).pack(side='left', padx=10)
 
     def show_profile(self):
-        """Show user profile"""
         if self.notebook:
             self.notebook.select(0)
             home_tab = self.notebook.winfo_children()[0]
@@ -1289,31 +1546,39 @@ class MainApplication:
             for child in home_tab.winfo_children():
                 child.destroy()
             
-            label = ttk.Label(home_tab, text="User Profile", font=('Arial', 16))
+            label = ttk.Label(home_tab, text="👤 User Profile", font=('Arial', 18, 'bold'))
             label.pack(pady=20)
             
             info_frame = ttk.Frame(home_tab)
-            info_frame.pack(pady=10)
+            info_frame.pack(pady=10, padx=50, fill='both', expand=True)
             
-            ttk.Label(info_frame, text=f"Email: {self.user_email}").grid(row=0, column=0, sticky='w', pady=5)
-            ttk.Label(info_frame, text="Registration Date: 01/01/2023").grid(row=1, column=0, sticky='w', pady=5)
-            ttk.Label(info_frame, text="Last Login: Today").grid(row=2, column=0, sticky='w', pady=5)
+            # Profile information
+            profile_data = [
+                ("Email:", self.user_email),
+                ("User ID:", str(self.user_id)),
+                ("Registration Date:", "01/01/2023"),
+                ("Last Login:", "Today"),
+                ("", ""),
+                ("📊 Statistics:", ""),
+                ("Total Files:", str(len(DatabaseManager.get_user_files(self.user_id)))),
+                ("Favorite Files:", str(len(DatabaseManager.get_user_files(self.user_id, favorites_only=True)))),
+                ("Groups Created:", str(len(DatabaseManager.get_user_groups(self.user_id)))),
+                ("Current Theme:", theme_manager.current_theme.title()),
+                ("TTS Status:", "Enabled ✓" if TTS_AVAILABLE else "Disabled ✗"),
+            ]
             
-            favorite_count = len(DatabaseManager.get_user_files(self.user_id, favorites_only=True))
-            ttk.Label(info_frame, text=f"Favorite Files: {favorite_count}").grid(row=3, column=0, sticky='w', pady=5)
+            for i, (label_text, value_text) in enumerate(profile_data):
+                if label_text == "":
+                    ttk.Separator(info_frame, orient='horizontal').grid(row=i, column=0, columnspan=2, sticky='ew', pady=10)
+                elif label_text.startswith("📊"):
+                    ttk.Label(info_frame, text=label_text, font=('Arial', 12, 'bold')).grid(row=i, column=0, columnspan=2, sticky='w', pady=(10, 5))
+                else:
+                    ttk.Label(info_frame, text=label_text, font=('Arial', 11, 'bold')).grid(row=i, column=0, sticky='w', pady=5, padx=(0, 20))
+                    ttk.Label(info_frame, text=value_text, font=('Arial', 11)).grid(row=i, column=1, sticky='w', pady=5)
             
-            total_files = len(DatabaseManager.get_user_files(self.user_id))
-            ttk.Label(info_frame, text=f"Total Files: {total_files}").grid(row=4, column=0, sticky='w', pady=5)
-            
-            group_count = len(DatabaseManager.get_user_groups(self.user_id))
-            ttk.Label(info_frame, text=f"Groups Created: {group_count}").grid(row=5, column=0, sticky='w', pady=5)
-            
-            ttk.Label(info_frame, text=f"Current Theme: {theme_manager.current_theme.title()}").grid(row=6, column=0, sticky='w', pady=5)
-            
-            ttk.Button(home_tab, text="Back to Home", command=self.show_home).pack(pady=20)
+            ttk.Button(home_tab, text="← Back to Home", command=self.show_home).pack(pady=20)
 
     def show_settings(self):
-        """Show application settings"""
         if self.notebook:
             self.notebook.select(0)
             home_tab = self.notebook.winfo_children()[0]
@@ -1321,20 +1586,20 @@ class MainApplication:
             for child in home_tab.winfo_children():
                 child.destroy()
             
-            label = ttk.Label(home_tab, text="Application Settings", font=('Arial', 16))
+            label = ttk.Label(home_tab, text="⚙️  Application Settings", font=('Arial', 18, 'bold'))
             label.pack(pady=20)
             
             settings_frame = ttk.Frame(home_tab)
             settings_frame.pack(pady=10, padx=20, fill='both', expand=True)
             
             # Theme settings
-            theme_frame = ttk.LabelFrame(settings_frame, text="Theme Settings", padding=10)
-            theme_frame.grid(row=0, column=0, columnspan=2, sticky='ew', pady=10)
+            theme_frame = ttk.LabelFrame(settings_frame, text="🎨 Theme Settings", padding=15)
+            theme_frame.grid(row=0, column=0, columnspan=2, sticky='ew', pady=10, padx=10)
             
-            ttk.Label(theme_frame, text="Current Theme:").grid(row=0, column=0, sticky='w', pady=5)
+            ttk.Label(theme_frame, text="Current Theme:", font=('Arial', 10)).grid(row=0, column=0, sticky='w', pady=5)
             
             theme_var = tk.StringVar(value=theme_manager.current_theme)
-            theme_combo = ttk.Combobox(theme_frame, textvariable=theme_var, values=list(theme_manager.THEMES.keys()), state="readonly")
+            theme_combo = ttk.Combobox(theme_frame, textvariable=theme_var, values=list(theme_manager.THEMES.keys()), state="readonly", width=15)
             theme_combo.grid(row=0, column=1, sticky='w', pady=5, padx=(10, 0))
             
             def change_theme(event=None):
@@ -1345,35 +1610,46 @@ class MainApplication:
                 
             theme_combo.bind('<<ComboboxSelected>>', change_theme)
             
-            ttk.Button(theme_frame, text="Toggle Theme", command=lambda: [self.toggle_theme(), self.show_vim_info() if hasattr(self, 'show_vim_info') else None]).grid(row=0, column=2, padx=10)
+            ttk.Button(theme_frame, text="Toggle Dark/Light", command=lambda: [self.toggle_theme(), self.show_vim_info() if hasattr(self, 'show_vim_info') else None]).grid(row=0, column=2, padx=10)
+            
+            # TTS settings
+            tts_frame = ttk.LabelFrame(settings_frame, text="🔊 Text-to-Speech Settings", padding=15)
+            tts_frame.grid(row=1, column=0, columnspan=2, sticky='ew', pady=10, padx=10)
+            
+            if TTS_AVAILABLE:
+                ttk.Label(tts_frame, text="Status: Enabled ✓", foreground='green', font=('Arial', 10, 'bold')).grid(row=0, column=0, sticky='w', pady=5)
+                ttk.Label(tts_frame, text="Default Speed: 150 WPM", font=('Arial', 9)).grid(row=1, column=0, sticky='w', pady=5)
+                ttk.Label(tts_frame, text="Default Volume: 90%", font=('Arial', 9)).grid(row=2, column=0, sticky='w', pady=5)
+            else:
+                ttk.Label(tts_frame, text="Status: Disabled ✗", foreground='red', font=('Arial', 10, 'bold')).grid(row=0, column=0, sticky='w', pady=5)
+                ttk.Label(tts_frame, text="Install pyttsx3 to enable TTS:", font=('Arial', 9)).grid(row=1, column=0, sticky='w', pady=5)
+                ttk.Label(tts_frame, text="pip install pyttsx3", font=('Courier', 9)).grid(row=2, column=0, sticky='w', pady=5)
             
             # Vim theme settings
-            vim_frame = ttk.LabelFrame(settings_frame, text="Vim Theme Integration", padding=10)
-            vim_frame.grid(row=1, column=0, columnspan=2, sticky='ew', pady=10)
+            vim_frame = ttk.LabelFrame(settings_frame, text="🖥️  Vim Theme Integration", padding=15)
+            vim_frame.grid(row=2, column=0, columnspan=2, sticky='ew', pady=10, padx=10)
             
-            ttk.Label(vim_frame, text="Generate matching Vim color scheme:").grid(row=0, column=0, sticky='w', pady=5)
+            ttk.Label(vim_frame, text="Generate matching Vim color scheme:", font=('Arial', 10)).grid(row=0, column=0, sticky='w', pady=5)
             
             ttk.Button(vim_frame, text="Generate Vim Theme", command=self.generate_vim_theme).grid(row=0, column=1, padx=10)
-            ttk.Button(vim_frame, text="Show Vim Instructions", command=self.show_vim_instructions).grid(row=0, column=2, padx=5)
+            ttk.Button(vim_frame, text="Show Instructions", command=self.show_vim_instructions).grid(row=0, column=2, padx=5)
             
-            # Vim info display
             self.vim_info_frame = ttk.Frame(vim_frame)
             self.vim_info_frame.grid(row=1, column=0, columnspan=3, sticky='ew', pady=10)
             
             # Other settings
-            other_frame = ttk.LabelFrame(settings_frame, text="Other Settings", padding=10)
-            other_frame.grid(row=2, column=0, columnspan=2, sticky='ew', pady=10)
+            other_frame = ttk.LabelFrame(settings_frame, text="📝 Other Settings", padding=15)
+            other_frame.grid(row=3, column=0, columnspan=2, sticky='ew', pady=10, padx=10)
             
-            ttk.Checkbutton(other_frame, text="Email Notifications").grid(row=0, column=0, sticky='w', pady=5)
+            ttk.Checkbutton(other_frame, text="Enable notifications").grid(row=0, column=0, sticky='w', pady=5)
             ttk.Checkbutton(other_frame, text="Auto-save annotations").grid(row=1, column=0, sticky='w', pady=5)
+            ttk.Checkbutton(other_frame, text="Remember last opened file").grid(row=2, column=0, sticky='w', pady=5)
             
-            ttk.Button(home_tab, text="Back to Home", command=self.show_home).pack(pady=20)
+            ttk.Button(home_tab, text="← Back to Home", command=self.show_home).pack(pady=20)
             
-            # Show initial Vim info
             self.show_vim_info()
 
     def generate_vim_theme(self):
-        """Generate Vim theme and show confirmation"""
         theme_manager.generate_vim_theme()
         messagebox.showinfo(
             "Vim Theme Generated", 
@@ -1382,7 +1658,6 @@ class MainApplication:
         self.show_vim_info()
 
     def show_vim_instructions(self):
-        """Show Vim theme usage instructions"""
         instructions = theme_manager.get_vim_instructions()
         
         dialog = tk.Toplevel(self.root)
@@ -1413,7 +1688,6 @@ class MainApplication:
         theme_manager.apply_theme_recursive(dialog)
 
     def show_vim_info(self):
-        """Show current Vim theme information in settings"""
         for widget in self.vim_info_frame.winfo_children():
             widget.destroy()
         
@@ -1427,13 +1701,12 @@ class MainApplication:
             else:
                 info_text += " (Not generated)"
             
-            ttk.Label(self.vim_info_frame, text=info_text).pack(anchor='w')
+            ttk.Label(self.vim_info_frame, text=info_text, font=('Arial', 9)).pack(anchor='w')
             
             if theme_path and os.path.exists(theme_path):
                 ttk.Label(self.vim_info_frame, text=f"Location: {theme_path}", font=('Arial', 8)).pack(anchor='w')
 
     def show_about(self):
-        """Show about information"""
         if self.notebook:
             self.notebook.select(0)
             home_tab = self.notebook.winfo_children()[0]
@@ -1441,15 +1714,16 @@ class MainApplication:
             for child in home_tab.winfo_children():
                 child.destroy()
             
-            label = ttk.Label(home_tab, text="About This Application", font=('Arial', 16))
+            label = ttk.Label(home_tab, text="ℹ️  About This Application", font=('Arial', 18, 'bold'))
             label.pack(pady=20)
             
-            about_text = """PDF Viewer Application with Groups & Favorites
-Version 1.4.0
+            about_text = """PDF Viewer Application with Text-to-Speech
+Version 2.0.0
 Developed with Python and Tkinter
 
-Features:
+✨ Features:
 • PDF viewing and annotation
+• Text-to-Speech (TTS) for reading PDFs aloud
 • File organization with groups
 • File management with favorites
 • Search functionality
@@ -1460,8 +1734,24 @@ Features:
 • Book download from Project Gutenberg
 • Vim theme integration
 
+🔊 TTS Features:
+• Read current page
+• Read from current page to end
+• Adjustable speed (50-300 WPM)
+• Volume control
+• Pause/Resume functionality
+
+📚 Libraries Used:
+• PyMuPDF (fitz) - PDF processing
+• pyttsx3 - Text-to-Speech
+• tkinter - GUI framework
+• requests - HTTP requests
+
 © 2025 All rights reserved"""
             
-            ttk.Label(home_tab, text=about_text, justify='left').pack(pady=10)
+            text_widget = tk.Text(home_tab, wrap='word', height=25, width=60, font=('Arial', 10))
+            text_widget.pack(pady=10, padx=20)
+            text_widget.insert('1.0', about_text)
+            text_widget.config(state='disabled')
             
-            ttk.Button(home_tab, text="Back to Home", command=self.show_home).pack(pady=20)
+            ttk.Button(home_tab, text="← Back to Home", command=self.show_home).pack(pady=20)
