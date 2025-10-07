@@ -1,6 +1,7 @@
 import sqlite3
 import bcrypt
 import os
+from datetime import datetime, timedelta
 
 class DatabaseManager:
     @staticmethod
@@ -16,28 +17,15 @@ class DatabaseManager:
                 )
             ''')
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS grupos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    usuario_id INTEGER NOT NULL,
-                    nome_grupo TEXT NOT NULL,
-                    descricao TEXT,
-                    cor TEXT DEFAULT '#007acc',
-                    data_criacao TEXT DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
-                )
-            ''')
-            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS arquivos (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     usuario_id INTEGER NOT NULL,
-                    grupo_id INTEGER,
                     nome_arquivo TEXT NOT NULL,
                     caminho_arquivo TEXT NOT NULL,
                     tipo_arquivo TEXT NOT NULL,
                     favorito INTEGER DEFAULT 0,
                     data_upload TEXT DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id),
-                    FOREIGN KEY (grupo_id) REFERENCES grupos (id)
+                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
                 )
             ''')
             cursor.execute('''
@@ -67,35 +55,24 @@ class DatabaseManager:
                 )
             ''')
             
+            # Nova tabela para tokens de recuperação de senha
             cursor.execute('''
-            CREATE TABLE IF NOT EXISTS anotacoes_gerais (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario_id INTEGER NOT NULL,
-                titulo TEXT NOT NULL,
-                conteudo TEXT,
-                arquivo_id INTEGER,
-                grupo_id INTEGER,
-                tags TEXT,
-                data_criacao TEXT DEFAULT CURRENT_TIMESTAMP,
-                data_modificacao TEXT DEFAULT CURRENT_TIMESTAMP,
-                cor TEXT DEFAULT '#ffffff',
-                favorito INTEGER DEFAULT 0,
-                FOREIGN KEY (usuario_id) REFERENCES usuarios (id),
-                FOREIGN KEY (arquivo_id) REFERENCES arquivos (id),
-                FOREIGN KEY (grupo_id) REFERENCES grupos (id)
-            )
-        ''')
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL,
+                    token TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER DEFAULT 0,
+                    FOREIGN KEY (email) REFERENCES usuarios (email)
+                )
+            ''')
             
-            # Adicionar colunas se elas não existirem (para compatibilidade com DBs existentes)
+            # Adicionar a coluna favorito se ela não existir (para compatibilidade com DBs existentes)
             try:
                 cursor.execute('ALTER TABLE arquivos ADD COLUMN favorito INTEGER DEFAULT 0')
             except sqlite3.OperationalError:
-                pass
-            
-            try:
-                cursor.execute('ALTER TABLE arquivos ADD COLUMN grupo_id INTEGER REFERENCES grupos (id)')
-            except sqlite3.OperationalError:
-                pass
+                pass  # Coluna já existe
                 
             conn.commit()
 
@@ -103,12 +80,15 @@ class DatabaseManager:
     def register_user(email, password):
         """Register a new user in the database"""
         try:
+            # Validação básica do email
             if not email or "@" not in email or "." not in email:
                 return False
 
+            # Validação da senha
             if not password or len(password) < 6:
                 return False
 
+            # Gera o hash da senha
             salt = bcrypt.gensalt()
             password_hash = bcrypt.hashpw(password.encode('utf-8'), salt)
 
@@ -122,6 +102,7 @@ class DatabaseManager:
 
             return True
         except sqlite3.IntegrityError:
+            # Email já existe
             return False
         except Exception as e:
             print(f"Registration failed: {str(e)}")
@@ -140,6 +121,7 @@ class DatabaseManager:
 
                 if result:
                     stored_hash = result[0]
+                    # Ajuste para lidar com tipos de bytes e string
                     if isinstance(stored_hash, str):
                         stored_hash = stored_hash.encode('utf-8')
                     return bcrypt.checkpw(password.encode('utf-8'), stored_hash)
@@ -163,89 +145,131 @@ class DatabaseManager:
             print(f"Failed to get user ID: {str(e)}")
             return None
 
-    # MÉTODOS PARA GRUPOS
     @staticmethod
-    def create_group(user_id, nome_grupo, descricao=None, cor='#007acc'):
-        """Create a new group for the user"""
+    def email_exists(email):
+        """Check if email exists in the database"""
         try:
             with sqlite3.connect('usuarios.db') as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    'INSERT INTO grupos (usuario_id, nome_grupo, descricao, cor) VALUES (?, ?, ?, ?)',
-                    (user_id, nome_grupo, descricao, cor))
-                conn.commit()
-                return cursor.lastrowid
-        except Exception as e:
-            print(f"Failed to create group: {str(e)}")
-            return None
-
-    @staticmethod
-    def get_user_groups(user_id):
-        """Get all groups for a user"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    'SELECT id, nome_grupo, descricao, cor, data_criacao FROM grupos WHERE usuario_id = ? ORDER BY nome_grupo',
-                    (user_id,))
-                return cursor.fetchall()
-        except Exception as e:
-            print(f"Failed to get groups: {str(e)}")
-            return []
-
-    @staticmethod
-    def update_group(group_id, nome_grupo, descricao=None, cor=None):
-        """Update group information"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    'UPDATE grupos SET nome_grupo = ?, descricao = ?, cor = ? WHERE id = ?',
-                    (nome_grupo, descricao, cor, group_id))
-                conn.commit()
-            return True
-        except Exception as e:
-            print(f"Failed to update group: {str(e)}")
-            return False
-
-    @staticmethod
-    def delete_group(group_id):
-        """Delete a group and move files to ungrouped"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                # Move files to ungrouped (NULL group_id)
-                cursor.execute('UPDATE arquivos SET grupo_id = NULL WHERE grupo_id = ?', (group_id,))
-                # Delete the group
-                cursor.execute('DELETE FROM grupos WHERE id = ?', (group_id,))
-                conn.commit()
-            return True
-        except Exception as e:
-            print(f"Failed to delete group: {str(e)}")
-            return False
-
-    @staticmethod
-    def get_group_file_count(group_id):
-        """Get the number of files in a group"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute('SELECT COUNT(*) FROM arquivos WHERE grupo_id = ?', (group_id,))
+                    'SELECT COUNT(*) FROM usuarios WHERE email = ?',
+                    (email,))
                 result = cursor.fetchone()
-                return result[0] if result else 0
+                return result[0] > 0
         except Exception as e:
-            print(f"Failed to get file count: {str(e)}")
-            return 0
+            print(f"Failed to check email existence: {str(e)}")
+            return False
 
     @staticmethod
-    def save_file(user_id, filename, filepath, file_type, group_id=None):
+    def save_reset_token(email, token):
+        """Save password reset token"""
+        try:
+            # Token expira em 1 hora
+            created_at = datetime.now().isoformat()
+            expires_at = (datetime.now() + timedelta(hours=1)).isoformat()
+            
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                
+                # Marcar tokens anteriores como usados
+                cursor.execute(
+                    'UPDATE password_reset_tokens SET used = 1 WHERE email = ? AND used = 0',
+                    (email,)
+                )
+                
+                # Inserir novo token
+                cursor.execute(
+                    '''INSERT INTO password_reset_tokens 
+                    (email, token, created_at, expires_at, used) 
+                    VALUES (?, ?, ?, ?, 0)''',
+                    (email, token, created_at, expires_at)
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Failed to save reset token: {str(e)}")
+            return False
+
+    @staticmethod
+    def verify_reset_token(email, token):
+        """Verify if reset token is valid and not expired"""
+        try:
+            current_time = datetime.now().isoformat()
+            
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''SELECT COUNT(*) FROM password_reset_tokens 
+                    WHERE email = ? AND token = ? AND used = 0 AND expires_at > ?''',
+                    (email, token, current_time)
+                )
+                result = cursor.fetchone()
+                return result[0] > 0
+        except Exception as e:
+            print(f"Failed to verify reset token: {str(e)}")
+            return False
+
+    @staticmethod
+    def reset_password_with_token(email, token, new_password):
+        """Reset password using valid token"""
+        try:
+            # Primeiro verifica se o token é válido
+            if not DatabaseManager.verify_reset_token(email, token):
+                return False
+            
+            # Gera hash da nova senha
+            salt = bcrypt.gensalt()
+            password_hash = bcrypt.hashpw(new_password.encode('utf-8'), salt)
+            
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                
+                # Atualiza a senha
+                cursor.execute(
+                    'UPDATE usuarios SET senha_hash = ? WHERE email = ?',
+                    (password_hash, email)
+                )
+                
+                # Marca o token como usado
+                cursor.execute(
+                    'UPDATE password_reset_tokens SET used = 1 WHERE email = ? AND token = ?',
+                    (email, token)
+                )
+                
+                conn.commit()
+                return cursor.rowcount > 0
+                
+        except Exception as e:
+            print(f"Failed to reset password: {str(e)}")
+            return False
+
+    @staticmethod
+    def cleanup_expired_tokens():
+        """Remove expired tokens from database"""
+        try:
+            current_time = datetime.now().isoformat()
+            
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM password_reset_tokens WHERE expires_at < ?',
+                    (current_time,)
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Failed to cleanup tokens: {str(e)}")
+            return False
+
+    @staticmethod
+    def save_file(user_id, filename, filepath, file_type):
         """Save file information to database"""
         try:
             with sqlite3.connect('usuarios.db') as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    'INSERT INTO arquivos (usuario_id, grupo_id, nome_arquivo, caminho_arquivo, tipo_arquivo, favorito) VALUES (?, ?, ?, ?, ?, ?)',
-                    (user_id, group_id, filename, filepath, file_type, 0))
+                    'INSERT INTO arquivos (usuario_id, nome_arquivo, caminho_arquivo, tipo_arquivo, favorito) VALUES (?, ?, ?, ?, ?)',
+                    (user_id, filename, filepath, file_type, 0))
                 conn.commit()
                 return cursor.lastrowid
         except Exception as e:
@@ -253,54 +277,23 @@ class DatabaseManager:
             return None
 
     @staticmethod
-    def get_user_files(user_id, favorites_only=False, group_id=None):
-        """Get all files for a user, optionally filtered by group"""
+    def get_user_files(user_id, favorites_only=False):
+        """Get all files for a user"""
         try:
             with sqlite3.connect('usuarios.db') as conn:
                 cursor = conn.cursor()
-                
-                base_query = '''
-                    SELECT a.id, a.nome_arquivo, a.tipo_arquivo, a.data_upload, a.favorito, 
-                           a.grupo_id, g.nome_grupo, g.cor
-                    FROM arquivos a 
-                    LEFT JOIN grupos g ON a.grupo_id = g.id
-                    WHERE a.usuario_id = ?
-                '''
-                
-                params = [user_id]
-                
                 if favorites_only:
-                    base_query += ' AND a.favorito = 1'
-                
-                if group_id is not None:
-                    if group_id == -1:  # Special case for ungrouped files
-                        base_query += ' AND a.grupo_id IS NULL'
-                    else:
-                        base_query += ' AND a.grupo_id = ?'
-                        params.append(group_id)
-                
-                base_query += ' ORDER BY a.favorito DESC, a.data_upload DESC'
-                
-                cursor.execute(base_query, params)
+                    cursor.execute(
+                        'SELECT id, nome_arquivo, tipo_arquivo, data_upload, favorito FROM arquivos WHERE usuario_id = ? AND favorito = 1 ORDER BY data_upload DESC',
+                        (user_id,))
+                else:
+                    cursor.execute(
+                        'SELECT id, nome_arquivo, tipo_arquivo, data_upload, favorito FROM arquivos WHERE usuario_id = ? ORDER BY favorito DESC, data_upload DESC',
+                        (user_id,))
                 return cursor.fetchall()
         except Exception as e:
             print(f"Failed to get files: {str(e)}")
             return []
-
-    @staticmethod
-    def move_file_to_group(file_id, group_id):
-        """Move a file to a different group"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    'UPDATE arquivos SET grupo_id = ? WHERE id = ?',
-                    (group_id, file_id))
-                conn.commit()
-            return True
-        except Exception as e:
-            print(f"Failed to move file: {str(e)}")
-            return False
 
     @staticmethod
     def get_file_path(file_id):
@@ -323,6 +316,7 @@ class DatabaseManager:
         try:
             with sqlite3.connect('usuarios.db') as conn:
                 cursor = conn.cursor()
+                # Deletar também as anotações e highlights relacionados
                 cursor.execute('DELETE FROM anotacoes WHERE arquivo_id = ?', (file_id,))
                 cursor.execute('DELETE FROM highlights WHERE arquivo_id = ?', (file_id,))
                 cursor.execute('DELETE FROM arquivos WHERE id = ?', (file_id,))
@@ -338,6 +332,7 @@ class DatabaseManager:
         try:
             with sqlite3.connect('usuarios.db') as conn:
                 cursor = conn.cursor()
+                # Primeiro, obter o status atual
                 cursor.execute('SELECT favorito FROM arquivos WHERE id = ?', (file_id,))
                 result = cursor.fetchone()
                 if result:
@@ -415,6 +410,7 @@ class DatabaseManager:
             print(f"Failed to delete annotation: {str(e)}")
             return False
 
+    # ----------- MÉTODOS PARA HIGHLIGHTS (MARCA-TEXTO) -----------
     @staticmethod
     def save_highlight(file_id, page, texto_destacado, cor='yellow', bbox=None):
         """Save a highlight (marca-texto) to the database"""
@@ -463,103 +459,3 @@ class DatabaseManager:
         except Exception as e:
             print(f"Failed to delete highlight: {str(e)}")
             return False
-        
-    @staticmethod
-    def criar_anotacao_geral(usuario_id, titulo, conteudo, arquivo_id=None, grupo_id=None, tags=None, cor='#ffffff'):
-        """Criar uma nova anotação geral"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO anotacoes_gerais 
-                    (usuario_id, titulo, conteudo, arquivo_id, grupo_id, tags, cor)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (usuario_id, titulo, conteudo, arquivo_id, grupo_id, tags, cor))
-                conn.commit()
-                return cursor.lastrowid
-        except Exception as e:
-            print(f"Failed to create general annotation: {str(e)}")
-            return None
-
-    @staticmethod
-    def get_anotacoes_gerais(usuario_id, filtro_arquivo=None, filtro_grupo=None, apenas_favoritos=False):
-        """Obter todas as anotações gerais do usuário"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                
-                query = '''
-                    SELECT ag.*, a.nome_arquivo, g.nome_grupo 
-                    FROM anotacoes_gerais ag
-                    LEFT JOIN arquivos a ON ag.arquivo_id = a.id
-                    LEFT JOIN grupos g ON ag.grupo_id = g.id
-                    WHERE ag.usuario_id = ?
-                '''
-                params = [usuario_id]
-                
-                if filtro_arquivo:
-                    query += ' AND ag.arquivo_id = ?'
-                    params.append(filtro_arquivo)
-                
-                if filtro_grupo:
-                    query += ' AND ag.grupo_id = ?'
-                    params.append(filtro_grupo)
-                
-                if apenas_favoritos:
-                    query += ' AND ag.favorito = 1'
-                
-                query += ' ORDER BY ag.data_modificacao DESC'
-                
-                cursor.execute(query, params)
-                return cursor.fetchall()
-        except Exception as e:
-            print(f"Failed to get general annotations: {str(e)}")
-            return []
-
-    @staticmethod
-    def atualizar_anotacao_geral(anotacao_id, titulo, conteudo, tags=None, cor=None):
-        """Atualizar uma anotação geral"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    UPDATE anotacoes_gerais 
-                    SET titulo = ?, conteudo = ?, tags = ?, cor = ?, data_modificacao = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ''', (titulo, conteudo, tags, cor, anotacao_id))
-                conn.commit()
-                return True
-        except Exception as e:
-            print(f"Failed to update general annotation: {str(e)}")
-            return False
-
-    @staticmethod
-    def deletar_anotacao_geral(anotacao_id):
-        """Deletar uma anotação geral"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM anotacoes_gerais WHERE id = ?', (anotacao_id,))
-                conn.commit()
-                return True
-        except Exception as e:
-            print(f"Failed to delete general annotation: {str(e)}")
-            return False
-
-    @staticmethod
-    def toggle_favorito_anotacao(anotacao_id):
-        """Alternar status de favorito de uma anotação"""
-        try:
-            with sqlite3.connect('usuarios.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute('SELECT favorito FROM anotacoes_gerais WHERE id = ?', (anotacao_id,))
-                result = cursor.fetchone()
-                if result:
-                    novo_status = 1 if result[0] == 0 else 0
-                    cursor.execute('UPDATE anotacoes_gerais SET favorito = ? WHERE id = ?', (novo_status, anotacao_id))
-                    conn.commit()
-                    return novo_status
-                return None
-        except Exception as e:
-            print(f"Failed to toggle annotation favorite: {str(e)}")
-            return None
