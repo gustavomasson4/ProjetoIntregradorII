@@ -4,6 +4,7 @@ import os
 import shutil
 from database import DatabaseManager
 from pdf_viewer import PDFViewer
+from epub_viewer import EPUBViewer
 from theme_manager import theme_manager
 import fitz
 import threading
@@ -19,319 +20,6 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
     print("pyttsx3 not installed. Install with: pip install pyttsx3")
-
-# ==================== PDF TEXT READER CLASS ====================
-class PDFTextReader:
-    """Text-to-Speech reader for PDF documents"""
-    
-    def __init__(self, pdf_viewer):
-        self.pdf_viewer = pdf_viewer
-        self.is_reading = False
-        self.is_paused = False
-        self.engine = None
-        self.current_text = ""
-        self.reading_thread = None
-        self.stop_event = threading.Event()
-        
-        if TTS_AVAILABLE:
-            self.initialize_engine()
-    
-    def initialize_engine(self):
-        """Initialize the TTS engine"""
-        try:
-            self.engine = pyttsx3.init()
-            self.engine.setProperty('rate', 150)
-            self.engine.setProperty('volume', 0.9)
-            
-            voices = self.engine.getProperty('voices')
-            if voices:
-                self.engine.setProperty('voice', voices[0].id)
-                
-        except Exception as e:
-            print(f"Error initializing TTS engine: {e}")
-            self.engine = None
-    
-    def extract_page_text(self, page_number=None):
-        """Extract text from current or specified page"""
-        if not self.pdf_viewer.pdf_doc:
-            return ""
-        
-        if page_number is None:
-            page_number = self.pdf_viewer.current_page
-        
-        try:
-            page = self.pdf_viewer.pdf_doc[page_number]
-            text = page.get_text()
-            text = text.strip()
-            text = ' '.join(text.split())
-            return text
-        except Exception as e:
-            print(f"Error extracting text: {e}")
-            return ""
-    
-    def read_current_page(self):
-        """Read the current page"""
-        if not TTS_AVAILABLE or not self.engine:
-            messagebox.showerror("Error", "TTS engine not available. Install pyttsx3.")
-            return
-        
-        if not self.pdf_viewer.pdf_doc:
-            messagebox.showwarning("Warning", "No PDF document loaded!")
-            return
-        
-        text = self.extract_page_text()
-        
-        if not text:
-            messagebox.showwarning("Warning", "No text found on current page!")
-            return
-        
-        self.start_reading(text)
-    
-    def read_from_page(self, start_page=None):
-        """Read from specified page to end of document"""
-        if not TTS_AVAILABLE or not self.engine:
-            messagebox.showerror("Error", "TTS engine not available. Install pyttsx3.")
-            return
-        
-        if not self.pdf_viewer.pdf_doc:
-            messagebox.showwarning("Warning", "No PDF document loaded!")
-            return
-        
-        if start_page is None:
-            start_page = self.pdf_viewer.current_page
-        
-        all_text = []
-        for page_num in range(start_page, len(self.pdf_viewer.pdf_doc)):
-            text = self.extract_page_text(page_num)
-            if text:
-                all_text.append(f"Page {page_num + 1}. {text}")
-        
-        if not all_text:
-            messagebox.showwarning("Warning", "No text found!")
-            return
-        
-        combined_text = " ... ".join(all_text)
-        self.start_reading(combined_text)
-    
-    def start_reading(self, text):
-        """Start reading text in a separate thread"""
-        if self.is_reading:
-            self.stop_reading()
-        
-        self.current_text = text
-        self.is_reading = True
-        self.is_paused = False
-        self.stop_event.clear()
-        
-        self.reading_thread = threading.Thread(target=self._read_text, daemon=True)
-        self.reading_thread.start()
-    
-    def _read_text(self):
-        """Internal method to read text (runs in separate thread)"""
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', self.engine.getProperty('rate'))
-            engine.setProperty('volume', self.engine.getProperty('volume'))
-            engine.setProperty('voice', self.engine.getProperty('voice'))
-            
-            sentences = self.current_text.split('. ')
-            
-            for sentence in sentences:
-                if self.stop_event.is_set():
-                    break
-                
-                while self.is_paused and not self.stop_event.is_set():
-                    threading.Event().wait(0.1)
-                
-                if self.stop_event.is_set():
-                    break
-                
-                if sentence.strip():
-                    engine.say(sentence)
-                    engine.runAndWait()
-            
-            self.is_reading = False
-            
-        except Exception as e:
-            print(f"Error during reading: {e}")
-            self.is_reading = False
-    
-    def pause_reading(self):
-        """Pause reading"""
-        if self.is_reading and not self.is_paused:
-            self.is_paused = True
-    
-    def resume_reading(self):
-        """Resume reading"""
-        if self.is_reading and self.is_paused:
-            self.is_paused = False
-    
-    def stop_reading(self):
-        """Stop reading"""
-        if self.is_reading:
-            self.stop_event.set()
-            self.is_reading = False
-            self.is_paused = False
-            
-            if self.reading_thread and self.reading_thread.is_alive():
-                self.reading_thread.join(timeout=1.0)
-    
-    def set_speed(self, speed):
-        """Set reading speed (words per minute)"""
-        if self.engine:
-            self.engine.setProperty('rate', speed)
-    
-    def set_volume(self, volume):
-        """Set reading volume (0.0 to 1.0)"""
-        if self.engine:
-            self.engine.setProperty('volume', volume)
-    
-    def get_available_voices(self):
-        """Get list of available voices"""
-        if self.engine:
-            return self.engine.getProperty('voices')
-        return []
-
-# ==================== PDF READER CONTROLS CLASS ====================
-class PDFReaderControls:
-    """UI Controls for PDF Text Reader"""
-    
-    def __init__(self, parent_frame, pdf_viewer):
-        self.parent_frame = parent_frame
-        self.pdf_viewer = pdf_viewer
-        self.reader = PDFTextReader(pdf_viewer)
-        self.setup_ui()
-    
-    def setup_ui(self):
-        """Setup the reader control UI"""
-        control_frame = ttk.LabelFrame(self.parent_frame, text="📖 Text Reader (TTS)", padding=10)
-        control_frame.pack(fill='x', padx=5, pady=5)
-        
-        button_frame = ttk.Frame(control_frame)
-        button_frame.pack(fill='x', pady=5)
-        
-        self.read_page_btn = ttk.Button(
-            button_frame,
-            text="▶ Read Page",
-            command=self.reader.read_current_page
-        )
-        self.read_page_btn.pack(side='left', padx=2)
-        
-        self.read_from_btn = ttk.Button(
-            button_frame,
-            text="▶▶ Read From Here",
-            command=self.reader.read_from_page
-        )
-        self.read_from_btn.pack(side='left', padx=2)
-        
-        self.pause_btn = ttk.Button(
-            button_frame,
-            text="⏸ Pause",
-            command=self.toggle_pause,
-            state='disabled'
-        )
-        self.pause_btn.pack(side='left', padx=2)
-        
-        self.stop_btn = ttk.Button(
-            button_frame,
-            text="⏹ Stop",
-            command=self.stop_reading,
-            state='disabled'
-        )
-        self.stop_btn.pack(side='left', padx=2)
-        
-        settings_frame = ttk.Frame(control_frame)
-        settings_frame.pack(fill='x', pady=5)
-        
-        ttk.Label(settings_frame, text="Speed:").pack(side='left', padx=5)
-        
-        self.speed_var = tk.IntVar(value=150)
-        speed_scale = ttk.Scale(
-            settings_frame,
-            from_=50,
-            to=300,
-            variable=self.speed_var,
-            orient='horizontal',
-            length=150,
-            command=self.on_speed_change
-        )
-        speed_scale.pack(side='left', padx=5)
-        
-        self.speed_label = ttk.Label(settings_frame, text="150 WPM")
-        self.speed_label.pack(side='left', padx=5)
-        
-        ttk.Label(settings_frame, text="Volume:").pack(side='left', padx=5)
-        
-        self.volume_var = tk.DoubleVar(value=0.9)
-        volume_scale = ttk.Scale(
-            settings_frame,
-            from_=0.0,
-            to=1.0,
-            variable=self.volume_var,
-            orient='horizontal',
-            length=100,
-            command=self.on_volume_change
-        )
-        volume_scale.pack(side='left', padx=5)
-        
-        self.status_label = ttk.Label(control_frame, text="Ready", font=('Arial', 9, 'italic'))
-        self.status_label.pack(pady=5)
-        
-        self.update_status()
-        
-        if not TTS_AVAILABLE:
-            self.status_label.config(text="⚠️ TTS not available. Install pyttsx3.")
-            self.read_page_btn.config(state='disabled')
-            self.read_from_btn.config(state='disabled')
-    
-    def toggle_pause(self):
-        """Toggle pause/resume"""
-        if self.reader.is_paused:
-            self.reader.resume_reading()
-            self.pause_btn.config(text="⏸ Pause")
-        else:
-            self.reader.pause_reading()
-            self.pause_btn.config(text="▶ Resume")
-    
-    def stop_reading(self):
-        """Stop reading"""
-        self.reader.stop_reading()
-        self.pause_btn.config(text="⏸ Pause", state='disabled')
-        self.stop_btn.config(state='disabled')
-        self.read_page_btn.config(state='normal')
-        self.read_from_btn.config(state='normal')
-    
-    def on_speed_change(self, value):
-        """Handle speed change"""
-        speed = int(float(value))
-        self.speed_label.config(text=f"{speed} WPM")
-        self.reader.set_speed(speed)
-    
-    def on_volume_change(self, value):
-        """Handle volume change"""
-        volume = float(value)
-        self.reader.set_volume(volume)
-    
-    def update_status(self):
-        """Update reading status"""
-        if self.reader.is_reading:
-            if self.reader.is_paused:
-                self.status_label.config(text="⏸ Paused")
-            else:
-                self.status_label.config(text="🔊 Reading...")
-            
-            self.pause_btn.config(state='normal')
-            self.stop_btn.config(state='normal')
-            self.read_page_btn.config(state='disabled')
-            self.read_from_btn.config(state='disabled')
-        else:
-            self.status_label.config(text="Ready")
-            self.pause_btn.config(text="⏸ Pause", state='disabled')
-            self.stop_btn.config(state='disabled')
-            self.read_page_btn.config(state='normal')
-            self.read_from_btn.config(state='normal')
-        
-        self.parent_frame.after(200, self.update_status)
 
 # ==================== GROUP DIALOG CLASS ====================
 class GroupDialog:
@@ -701,7 +389,7 @@ class MainApplication:
         self.user_id = DatabaseManager.get_user_id(user_email)
         self.notebook = None
         self.pdf_viewer = None
-        self.pdf_reader_controls = None
+        self.epub_viewer = None
         self.show_favorites_only = False
         self.selected_group_id = None
         
@@ -804,42 +492,24 @@ class MainApplication:
         pdf_tab = ttk.Frame(self.notebook)
         self.notebook.add(pdf_tab, text="PDF Viewer")
         
+        epub_tab = ttk.Frame(self.notebook)
+        self.notebook.add(epub_tab, text="EPUB Viewer")
+        
         library_tab = ttk.Frame(self.notebook)
         self.notebook.add(library_tab, text="My Library")
         
         notes_tab = ttk.Frame(self.notebook)
         self.notebook.add(notes_tab, text="My Notes")
         
-        # Setup PDF Viewer
+        # Setup PDF Viewer - TTS já é criado automaticamente dentro do PDFViewer
         self.pdf_viewer = PDFViewer(pdf_tab)
         
-        # Add TTS controls AFTER pdf_viewer is created and its widgets are ready
-        self.root.after(100, self.setup_tts_controls)
+        # Setup EPUB Viewer
+        self.epub_viewer = EPUBViewer(epub_tab)
         
         self.setup_library_tab(library_tab)
         self.setup_notes_tab(notes_tab)
         self.show_home()
-
-    def setup_tts_controls(self):
-        """Setup TTS controls for PDF viewer"""
-        try:
-            # Get the PDF tab directly
-            pdf_tab = self.pdf_viewer.parent
-            
-            # Create a dedicated frame for TTS controls
-            # Pack it AFTER the main_frame but in the same parent
-            tts_container = ttk.Frame(pdf_tab)
-            tts_container.pack(side='bottom', fill='x', padx=10, pady=5)
-            
-            # Create the TTS controls
-            self.pdf_reader_controls = PDFReaderControls(tts_container, self.pdf_viewer)
-            
-            print("TTS controls created successfully!")
-            
-        except Exception as e:
-            print(f"Error setting up TTS controls: {e}")
-            import traceback
-            traceback.print_exc()
 
     def setup_notes_tab(self, tab):
         main_container = ttk.Frame(tab)
@@ -1458,12 +1128,15 @@ class MainApplication:
         
         try:
             if file_path.lower().endswith('.pdf'):
-                self.notebook.select(1)
+                self.notebook.select(1)  # PDF Viewer tab
                 self.pdf_viewer.pdf_doc = fitz.open(file_path)
                 self.pdf_viewer.file_id = file_id
                 self.pdf_viewer.current_page = 0
                 self.pdf_viewer.render_page()
                 self.pdf_viewer.update_controls()
+            elif file_path.lower().endswith('.epub'):
+                self.notebook.select(2)  # EPUB Viewer tab
+                self.epub_viewer.open_epub_file(file_path)
             else:
                 os.startfile(file_path)
         except Exception as e:
@@ -1513,7 +1186,6 @@ class MainApplication:
             )
             label.pack(expand=True, pady=20)
             
-            # Info frame
             info_frame = ttk.LabelFrame(self.notebook.winfo_children()[0], text="Quick Stats", padding=20)
             info_frame.pack(pady=20)
             
@@ -1536,7 +1208,8 @@ class MainApplication:
             ttk.Button(button_frame, text="📊 Open Profile", command=self.show_profile, width=20).pack(side='left', padx=10)
             ttk.Button(button_frame, text="⚙️  Open Settings", command=self.show_settings, width=20).pack(side='left', padx=10)
             ttk.Button(button_frame, text="📄 Open PDF Viewer", command=lambda: self.notebook.select(1), width=20).pack(side='left', padx=10)
-            ttk.Button(button_frame, text="📚 Open My Library", command=lambda: self.notebook.select(2), width=20).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="📖 Open EPUB Viewer", command=lambda: self.notebook.select(2), width=20).pack(side='left', padx=10)
+            ttk.Button(button_frame, text="📚 Open My Library", command=lambda: self.notebook.select(3), width=20).pack(side='left', padx=10)
 
     def show_profile(self):
         if self.notebook:
@@ -1552,7 +1225,6 @@ class MainApplication:
             info_frame = ttk.Frame(home_tab)
             info_frame.pack(pady=10, padx=50, fill='both', expand=True)
             
-            # Profile information
             profile_data = [
                 ("Email:", self.user_email),
                 ("User ID:", str(self.user_id)),
@@ -1592,7 +1264,6 @@ class MainApplication:
             settings_frame = ttk.Frame(home_tab)
             settings_frame.pack(pady=10, padx=20, fill='both', expand=True)
             
-            # Theme settings
             theme_frame = ttk.LabelFrame(settings_frame, text="🎨 Theme Settings", padding=15)
             theme_frame.grid(row=0, column=0, columnspan=2, sticky='ew', pady=10, padx=10)
             
@@ -1605,14 +1276,11 @@ class MainApplication:
             def change_theme(event=None):
                 selected_theme = theme_var.get()
                 theme_manager.set_theme(selected_theme)
-                if hasattr(self, 'show_vim_info'):
-                    self.show_vim_info()
                 
             theme_combo.bind('<<ComboboxSelected>>', change_theme)
             
-            ttk.Button(theme_frame, text="Toggle Dark/Light", command=lambda: [self.toggle_theme(), self.show_vim_info() if hasattr(self, 'show_vim_info') else None]).grid(row=0, column=2, padx=10)
+            ttk.Button(theme_frame, text="Toggle Dark/Light", command=self.toggle_theme).grid(row=0, column=2, padx=10)
             
-            # TTS settings
             tts_frame = ttk.LabelFrame(settings_frame, text="🔊 Text-to-Speech Settings", padding=15)
             tts_frame.grid(row=1, column=0, columnspan=2, sticky='ew', pady=10, padx=10)
             
@@ -1625,86 +1293,14 @@ class MainApplication:
                 ttk.Label(tts_frame, text="Install pyttsx3 to enable TTS:", font=('Arial', 9)).grid(row=1, column=0, sticky='w', pady=5)
                 ttk.Label(tts_frame, text="pip install pyttsx3", font=('Courier', 9)).grid(row=2, column=0, sticky='w', pady=5)
             
-            # Vim theme settings
-            vim_frame = ttk.LabelFrame(settings_frame, text="🖥️  Vim Theme Integration", padding=15)
-            vim_frame.grid(row=2, column=0, columnspan=2, sticky='ew', pady=10, padx=10)
-            
-            ttk.Label(vim_frame, text="Generate matching Vim color scheme:", font=('Arial', 10)).grid(row=0, column=0, sticky='w', pady=5)
-            
-            ttk.Button(vim_frame, text="Generate Vim Theme", command=self.generate_vim_theme).grid(row=0, column=1, padx=10)
-            ttk.Button(vim_frame, text="Show Instructions", command=self.show_vim_instructions).grid(row=0, column=2, padx=5)
-            
-            self.vim_info_frame = ttk.Frame(vim_frame)
-            self.vim_info_frame.grid(row=1, column=0, columnspan=3, sticky='ew', pady=10)
-            
-            # Other settings
             other_frame = ttk.LabelFrame(settings_frame, text="📝 Other Settings", padding=15)
-            other_frame.grid(row=3, column=0, columnspan=2, sticky='ew', pady=10, padx=10)
+            other_frame.grid(row=2, column=0, columnspan=2, sticky='ew', pady=10, padx=10)
             
             ttk.Checkbutton(other_frame, text="Enable notifications").grid(row=0, column=0, sticky='w', pady=5)
             ttk.Checkbutton(other_frame, text="Auto-save annotations").grid(row=1, column=0, sticky='w', pady=5)
             ttk.Checkbutton(other_frame, text="Remember last opened file").grid(row=2, column=0, sticky='w', pady=5)
             
             ttk.Button(home_tab, text="← Back to Home", command=self.show_home).pack(pady=20)
-            
-            self.show_vim_info()
-
-    def generate_vim_theme(self):
-        theme_manager.generate_vim_theme()
-        messagebox.showinfo(
-            "Vim Theme Generated", 
-            f"Vim theme generated successfully!\n\nTheme: {theme_manager.VIM_THEMES[theme_manager.current_theme]['name']}\nLocation: ~/.vim/colors/\n\nUse ':colorscheme {theme_manager.VIM_THEMES[theme_manager.current_theme]['name']}' in Vim"
-        )
-        self.show_vim_info()
-
-    def show_vim_instructions(self):
-        instructions = theme_manager.get_vim_instructions()
-        
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Vim Theme Instructions")
-        dialog.geometry("600x400")
-        dialog.grab_set()
-        
-        x = (dialog.winfo_screenwidth() - 600) // 2
-        y = (dialog.winfo_screenheight() - 400) // 2
-        dialog.geometry(f"600x400+{x}+{y}")
-        
-        frame = ttk.Frame(dialog, padding=20)
-        frame.pack(fill='both', expand=True)
-        
-        text_widget = tk.Text(frame, wrap='word', height=15, width=70)
-        text_widget.pack(fill='both', expand=True, pady=10)
-        
-        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=text_widget.yview)
-        text_widget.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side='right', fill='y')
-        
-        text_widget.insert('1.0', instructions)
-        text_widget.config(state='disabled')
-        
-        ttk.Button(frame, text="Close", command=dialog.destroy).pack(pady=10)
-        
-        theme_manager.apply_theme_to_widget(dialog)
-        theme_manager.apply_theme_recursive(dialog)
-
-    def show_vim_info(self):
-        for widget in self.vim_info_frame.winfo_children():
-            widget.destroy()
-        
-        vim_theme = theme_manager.VIM_THEMES.get(theme_manager.current_theme)
-        if vim_theme:
-            info_text = f"Current Vim theme: {vim_theme['name']}"
-            theme_path = theme_manager.get_vim_theme_path()
-            
-            if theme_path and os.path.exists(theme_path):
-                info_text += " ✓ (Generated)"
-            else:
-                info_text += " (Not generated)"
-            
-            ttk.Label(self.vim_info_frame, text=info_text, font=('Arial', 9)).pack(anchor='w')
-            
-            if theme_path and os.path.exists(theme_path):
-                ttk.Label(self.vim_info_frame, text=f"Location: {theme_path}", font=('Arial', 8)).pack(anchor='w')
 
     def show_about(self):
         if self.notebook:
@@ -1723,7 +1319,8 @@ Developed with Python and Tkinter
 
 ✨ Features:
 • PDF viewing and annotation
-• Text-to-Speech (TTS) for reading PDFs aloud
+• EPUB viewing with TTS
+• Text-to-Speech (TTS) for reading PDFs and EPUBs aloud
 • File organization with groups
 • File management with favorites
 • Search functionality
@@ -1732,10 +1329,9 @@ Developed with Python and Tkinter
 • Dark/Light theme support
 • Note-taking system
 • Book download from Project Gutenberg
-• Vim theme integration
 
 🔊 TTS Features:
-• Read current page
+• Read current page/chapter
 • Read from current page to end
 • Adjustable speed (50-300 WPM)
 • Volume control
@@ -1743,7 +1339,10 @@ Developed with Python and Tkinter
 
 📚 Libraries Used:
 • PyMuPDF (fitz) - PDF processing
+• EbookLib - EPUB processing
+• BeautifulSoup - HTML parsing
 • pyttsx3 - Text-to-Speech
+• gTTS - Google Text-to-Speech
 • tkinter - GUI framework
 • requests - HTTP requests
 

@@ -71,7 +71,6 @@ class LoginApplication:
             command=self.show_registration
         ).pack(side='left', padx=5)
         
-        # ========== RECUPERAÇÃO DE SENHA - INÍCIO ==========
         # Link para recuperar senha
         forgot_link = ttk.Label(
             form_frame,
@@ -82,7 +81,6 @@ class LoginApplication:
         )
         forgot_link.grid(row=3, columnspan=2, pady=10)
         forgot_link.bind("<Button-1>", lambda e: self.show_password_recovery())
-        # ========== RECUPERAÇÃO DE SENHA - FIM ==========
         
         # Separador
         separator = ttk.Separator(form_frame, orient='horizontal')
@@ -129,7 +127,13 @@ class LoginApplication:
         if result:
             self.launch_main_app("anonymous_user", is_anonymous=True)
 
-    # ========== RECUPERAÇÃO DE SENHA - INÍCIO ==========
+    def copy_to_clipboard(self, text):
+        """Copy text to clipboard"""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update()
+        messagebox.showinfo("Copiado", "Token copiado para a área de transferência!")
+
     def show_password_recovery(self):
         """Show password recovery dialog"""
         recovery_window = tk.Toplevel(self.root)
@@ -232,8 +236,8 @@ class LoginApplication:
         result_window.title("Email Enviado")
         result_window.grab_set()
         
-        window_width = 500
-        window_height = 350
+        window_width = 550
+        window_height = 400
         position_x = self.root.winfo_x() + (self.root.winfo_width() - window_width) // 2
         position_y = self.root.winfo_y() + (self.root.winfo_height() - window_height) // 2
         result_window.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
@@ -243,7 +247,7 @@ class LoginApplication:
         
         success_label = ttk.Label(
             main_frame,
-            text="Email enviado com sucesso!",
+            text="✅ Email enviado com sucesso!",
             font=('Arial', 14, 'bold'),
             foreground='green'
         )
@@ -251,19 +255,43 @@ class LoginApplication:
         
         instruction_text = f"""Um email foi enviado para: {email}
 
-DEMO - Token de recuperação:
-{token}
-
-Em um sistema real, você receberia um link por email.
-Para esta demonstração, use o token acima na tela de redefinição."""
+DEMO - Token de recuperação:"""
         
         instruction_label = ttk.Label(
             main_frame,
             text=instruction_text,
             justify='left',
-            wraplength=450
+            wraplength=500
         )
-        instruction_label.pack(pady=(0, 20))
+        instruction_label.pack(pady=(0, 10))
+        
+        # Frame para o token com botão de copiar
+        token_frame = ttk.Frame(main_frame)
+        token_frame.pack(pady=10, fill='x')
+        
+        # Token em um Entry (read-only) para facilitar seleção
+        token_entry = ttk.Entry(token_frame, width=40, font=('Courier', 10))
+        token_entry.insert(0, token)
+        token_entry.config(state='readonly')
+        token_entry.pack(side='left', padx=(0, 10), expand=True, fill='x')
+        
+        # Botão de copiar
+        copy_btn = ttk.Button(
+            token_frame,
+            text="📋 Copiar",
+            command=lambda: self.copy_to_clipboard(token),
+            width=12
+        )
+        copy_btn.pack(side='left')
+        
+        note_label = ttk.Label(
+            main_frame,
+            text="\nEm um sistema real, você receberia um link por email.\nPara esta demonstração, use o token acima na tela de redefinição.",
+            justify='center',
+            wraplength=500,
+            font=('Arial', 9, 'italic')
+        )
+        note_label.pack(pady=(10, 20))
         
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(pady=10)
@@ -367,7 +395,6 @@ Para esta demonstração, use o token acima na tela de redefinição."""
                 "Erro", 
                 "Token inválido ou expirado!\nSolicite uma nova recuperação de senha."
             )
-    # ========== RECUPERAÇÃO DE SENHA - FIM ==========
 
     def show_registration(self):
         """Show registration dialog"""
