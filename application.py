@@ -6,6 +6,7 @@ from database import DatabaseManager
 from pdf_viewer import PDFViewer
 from epub_viewer import EPUBViewer
 from theme_manager import theme_manager
+from book_recommendations import BookRecommendationsWindow
 import fitz
 import threading
 
@@ -421,6 +422,18 @@ class MainApplication:
         file_menu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=file_menu)
         
+        # MENU DE RECOMENDAÇÕES
+        recommendations_menu = tk.Menu(menubar, tearoff=0)
+        recommendations_menu.add_command(
+            label="📚 Book Recommendations",
+            command=self.show_recommendations
+        )
+        recommendations_menu.add_command(
+            label="⭐ My Ratings",
+            command=lambda: self.show_recommendations(tab=2)
+        )
+        menubar.add_cascade(label="Recommendations", menu=recommendations_menu)
+        
         user_menu = tk.Menu(menubar, tearoff=0)
         user_menu.add_command(label="Profile", command=self.show_profile)
         user_menu.add_command(label="Settings", command=self.show_settings)
@@ -456,6 +469,15 @@ class MainApplication:
         if dialog.result:
             self.refresh_file_list()
             self.refresh_groups_list()
+
+    def show_recommendations(self, tab=0):
+        """Show book recommendations window"""
+        try:
+            window = BookRecommendationsWindow(self.root, self.user_id)
+            if tab > 0:
+                window.notebook.select(tab)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open recommendations: {str(e)}")
 
     def toggle_theme(self):
         theme_manager.toggle_theme()
@@ -1314,7 +1336,7 @@ class MainApplication:
             label.pack(pady=20)
             
             about_text = """PDF Viewer Application with Text-to-Speech
-Version 2.0.0
+Version 2.1.0 - With Book Recommendations
 Developed with Python and Tkinter
 
 ✨ Features:
@@ -1329,6 +1351,7 @@ Developed with Python and Tkinter
 • Dark/Light theme support
 • Note-taking system
 • Book download from Project Gutenberg
+• Smart Book Recommendations System
 
 🔊 TTS Features:
 • Read current page/chapter
@@ -1336,6 +1359,13 @@ Developed with Python and Tkinter
 • Adjustable speed (50-300 WPM)
 • Volume control
 • Pause/Resume functionality
+
+📚 Recommendation Features:
+• Save reading preferences
+• Get personalized book suggestions
+• Rate and review books
+• Track reading history
+• Download recommended books
 
 📚 Libraries Used:
 • PyMuPDF (fitz) - PDF processing
@@ -1348,7 +1378,7 @@ Developed with Python and Tkinter
 
 © 2025 All rights reserved"""
             
-            text_widget = tk.Text(home_tab, wrap='word', height=25, width=60, font=('Arial', 10))
+            text_widget = tk.Text(home_tab, wrap='word', height=30, width=70, font=('Arial', 10))
             text_widget.pack(pady=10, padx=20)
             text_widget.insert('1.0', about_text)
             text_widget.config(state='disabled')

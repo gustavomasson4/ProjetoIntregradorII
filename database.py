@@ -459,3 +459,391 @@ class DatabaseManager:
         except Exception as e:
             print(f"Failed to delete highlight: {str(e)}")
             return False
+
+    # ... (código existente) ...
+    
+    # ==================== MÉTODOS PARA GRUPOS ====================
+    @staticmethod
+    def create_group(user_id, name, description="", color="#007acc"):
+        """Create a new group for organizing files"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS grupos (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        usuario_id INTEGER NOT NULL,
+                        nome TEXT NOT NULL,
+                        descricao TEXT,
+                        cor TEXT DEFAULT '#007acc',
+                        data_criacao TEXT DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+                    )
+                ''')
+                cursor.execute(
+                    'INSERT INTO grupos (usuario_id, nome, descricao, cor) VALUES (?, ?, ?, ?)',
+                    (user_id, name, description, color)
+                )
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            print(f"Failed to create group: {str(e)}")
+            return None
+
+    @staticmethod
+    def get_user_groups(user_id):
+        """Get all groups for a user"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, nome, descricao, cor, data_criacao 
+                    FROM grupos 
+                    WHERE usuario_id = ? 
+                    ORDER BY nome
+                ''', (user_id,))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"Failed to get groups: {str(e)}")
+            return []
+
+    @staticmethod
+    def update_group(group_id, name, description, color):
+        """Update group information"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'UPDATE grupos SET nome = ?, descricao = ?, cor = ? WHERE id = ?',
+                    (name, description, color, group_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Failed to update group: {str(e)}")
+            return False
+
+    @staticmethod
+    def delete_group(group_id):
+        """Delete a group and unassign all files from it"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('UPDATE arquivos SET grupo_id = NULL WHERE grupo_id = ?', (group_id,))
+                cursor.execute('DELETE FROM grupos WHERE id = ?', (group_id,))
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Failed to delete group: {str(e)}")
+            return False
+
+    @staticmethod
+    def get_group_file_count(group_id):
+        """Get number of files in a group"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM arquivos WHERE grupo_id = ?', (group_id,))
+                return cursor.fetchone()[0]
+        except Exception as e:
+            print(f"Failed to get file count: {str(e)}")
+            return 0
+
+    @staticmethod
+    def move_file_to_group(file_id, group_id):
+        """Move a file to a different group"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'UPDATE arquivos SET grupo_id = ? WHERE id = ?',
+                    (group_id, file_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Failed to move file: {str(e)}")
+            return False
+
+    @staticmethod
+    def save_file(user_id, filename, filepath, file_type, group_id=None):
+        """Save file information to database with optional group"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                
+                # Ensure grupo_id column exists
+                cursor.execute("PRAGMA table_info(arquivos)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if 'grupo_id' not in columns:
+                    cursor.execute('ALTER TABLE arquivos ADD COLUMN grupo_id INTEGER')
+                
+                cursor.execute(
+                    'INSERT INTO arquivos (usuario_id, nome_arquivo, caminho_arquivo, tipo_arquivo, favorito, grupo_id) VALUES (?, ?, ?, ?, ?, ?)',
+                    (user_id, filename, filepath, file_type, 0, group_id)
+                )
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            print(f"Failed to save file: {str(e)}")
+            return None
+
+    @staticmethod
+    def get_user_files(user_id, favorites_only=False, group_id=None):
+        """Get all files for a user with optional filtering"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                
+                # Ensure grupo_id column exists
+                cursor.execute("PRAGMA table_info(arquivos)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if 'grupo_id' not in columns:
+                    cursor.execute('ALTER TABLE arquivos ADD COLUMN grupo_id INTEGER')
+                
+                query = '''
+                    SELECT a.id, a.nome_arquivo, a.tipo_arquivo, a.data_upload, a.favorito, 
+                           a.grupo_id, g.nome as grupo_nome, g.cor as grupo_cor
+                    FROM arquivos a
+                    LEFT JOIN grupos g ON a.grupo_id = g.id
+                    WHERE a.usuario_id = ?
+                '''
+                params = [user_id]
+                
+                if favorites_only:
+                    query += ' AND a.favorito = 1'
+                
+                if group_id is not None:
+                    if group_id == -1:
+                        query += ' AND a.grupo_id IS NULL'
+                    else:
+                        query += ' AND a.grupo_id = ?'
+                        params.append(group_id)
+                
+                query += ' ORDER BY a.favorito DESC, a.data_upload DESC'
+                
+                cursor.execute(query, params)
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"Failed to get files: {str(e)}")
+            return []
+
+    # ==================== MÉTODOS PARA ANOTAÇÕES GERAIS ====================
+    @staticmethod
+    def criar_anotacao_geral(user_id, titulo, conteudo, arquivo_id=None, grupo_id=None, tags=""):
+        """Create a general note"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS anotacoes_gerais (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        usuario_id INTEGER NOT NULL,
+                        titulo TEXT NOT NULL,
+                        conteudo TEXT,
+                        arquivo_id INTEGER,
+                        grupo_id INTEGER,
+                        tags TEXT,
+                        data_criacao TEXT DEFAULT CURRENT_TIMESTAMP,
+                        data_modificacao TEXT DEFAULT CURRENT_TIMESTAMP,
+                        cor TEXT DEFAULT 'yellow',
+                        favorito INTEGER DEFAULT 0,
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios (id),
+                        FOREIGN KEY (arquivo_id) REFERENCES arquivos (id),
+                        FOREIGN KEY (grupo_id) REFERENCES grupos (id)
+                    )
+                ''')
+                cursor.execute('''
+                    INSERT INTO anotacoes_gerais 
+                    (usuario_id, titulo, conteudo, arquivo_id, grupo_id, tags) 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, titulo, conteudo, arquivo_id, grupo_id, tags))
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            print(f"Failed to create note: {str(e)}")
+            return None
+
+    @staticmethod
+    def get_anotacoes_gerais(user_id):
+        """Get all general notes for a user"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT ag.id, ag.usuario_id, ag.titulo, ag.conteudo, 
+                           ag.arquivo_id, ag.grupo_id, ag.tags, ag.data_criacao, 
+                           ag.data_modificacao, ag.cor, ag.favorito,
+                           a.nome_arquivo, g.nome as grupo_nome
+                    FROM anotacoes_gerais ag
+                    LEFT JOIN arquivos a ON ag.arquivo_id = a.id
+                    LEFT JOIN grupos g ON ag.grupo_id = g.id
+                    WHERE ag.usuario_id = ?
+                    ORDER BY ag.data_modificacao DESC
+                ''', (user_id,))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"Failed to get notes: {str(e)}")
+            return []
+
+    @staticmethod
+    def atualizar_anotacao_geral(anotacao_id, titulo, conteudo, tags=""):
+        """Update a general note"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE anotacoes_gerais 
+                    SET titulo = ?, conteudo = ?, tags = ?, 
+                        data_modificacao = CURRENT_TIMESTAMP 
+                    WHERE id = ?
+                ''', (titulo, conteudo, tags, anotacao_id))
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Failed to update note: {str(e)}")
+            return False
+
+    @staticmethod
+    def deletar_anotacao_geral(anotacao_id):
+        """Delete a general note"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM anotacoes_gerais WHERE id = ?', (anotacao_id,))
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Failed to delete note: {str(e)}")
+            return False
+
+    @staticmethod
+    def toggle_favorito_anotacao(anotacao_id):
+        """Toggle favorite status of a note"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT favorito FROM anotacoes_gerais WHERE id = ?', (anotacao_id,))
+                result = cursor.fetchone()
+                if result:
+                    current_status = result[0]
+                    new_status = 1 if current_status == 0 else 0
+                    cursor.execute(
+                        'UPDATE anotacoes_gerais SET favorito = ? WHERE id = ?',
+                        (new_status, anotacao_id)
+                    )
+                    conn.commit()
+                    return new_status
+                return None
+        except Exception as e:
+            print(f"Failed to toggle favorite: {str(e)}")
+            return None
+
+    # ==================== MÉTODOS PARA RECOMENDAÇÕES ====================
+    @staticmethod
+    def save_user_preferences(user_id, genres, authors, keywords):
+        """Save user reading preferences"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS user_preferences (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        usuario_id INTEGER NOT NULL,
+                        generos TEXT,
+                        autores TEXT,
+                        palavras_chave TEXT,
+                        data_atualizacao TEXT DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+                    )
+                ''')
+                
+                # Check if preferences exist
+                cursor.execute('SELECT id FROM user_preferences WHERE usuario_id = ?', (user_id,))
+                if cursor.fetchone():
+                    cursor.execute('''
+                        UPDATE user_preferences 
+                        SET generos = ?, autores = ?, palavras_chave = ?, 
+                            data_atualizacao = CURRENT_TIMESTAMP 
+                        WHERE usuario_id = ?
+                    ''', (genres, authors, keywords, user_id))
+                else:
+                    cursor.execute('''
+                        INSERT INTO user_preferences (usuario_id, generos, autores, palavras_chave) 
+                        VALUES (?, ?, ?, ?)
+                    ''', (user_id, genres, authors, keywords))
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Failed to save preferences: {str(e)}")
+            return False
+
+    @staticmethod
+    def get_user_preferences(user_id):
+        """Get user reading preferences"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT generos, autores, palavras_chave 
+                    FROM user_preferences 
+                    WHERE usuario_id = ?
+                ''', (user_id,))
+                result = cursor.fetchone()
+                if result:
+                    return {
+                        'genres': result[0] or '',
+                        'authors': result[1] or '',
+                        'keywords': result[2] or ''
+                    }
+                return None
+        except Exception as e:
+            print(f"Failed to get preferences: {str(e)}")
+            return None
+
+    @staticmethod
+    def save_book_rating(user_id, book_title, rating, review=""):
+        """Save user book rating"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS book_ratings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        usuario_id INTEGER NOT NULL,
+                        titulo_livro TEXT NOT NULL,
+                        avaliacao INTEGER NOT NULL,
+                        resenha TEXT,
+                        data_avaliacao TEXT DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+                    )
+                ''')
+                
+                cursor.execute('''
+                    INSERT INTO book_ratings (usuario_id, titulo_livro, avaliacao, resenha) 
+                    VALUES (?, ?, ?, ?)
+                ''', (user_id, book_title, rating, review))
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Failed to save rating: {str(e)}")
+            return False
+
+    @staticmethod
+    def get_user_ratings(user_id):
+        """Get all user book ratings"""
+        try:
+            with sqlite3.connect('usuarios.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT titulo_livro, avaliacao, resenha, data_avaliacao 
+                    FROM book_ratings 
+                    WHERE usuario_id = ? 
+                    ORDER BY data_avaliacao DESC
+                ''', (user_id,))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"Failed to get ratings: {str(e)}")
+            return []
